@@ -1,0 +1,756 @@
+//@version=6
+indicator("Arpan's Support & Resistance", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ================================== //
+// ---------> User Input <----------- //
+// ================================== //
+
+// --- CORE UPGRADES & PERFORMANCE --- //
+maxBarsBack     = input.int(2000, "Lookback Limit", group="Core Upgrades", tooltip="Limits calculations to recent bars for performance.")
+drawMode        = input.string("Boxes", "Draw Mode", options=["Boxes", "Lines"], group="Core Upgrades")
+invalidation    = input.string("Close", "Zone Invalidation", options=["Close", "Wick"], group="Core Upgrades")
+useMTF          = input.bool(true, "Use HTF Pivots", group="Core Upgrades")
+htfRes          = input.timeframe("240", "Higher Timeframe", group="Core Upgrades")
+useAutoAsset    = input.bool(true, "Auto-Tune Asset Matrix", group="Core Upgrades", tooltip="Dynamically adjusts Decay and Momentum based on Crypto/Forex/Gold.")
+
+// --- ARPAN'S INSTITUTIONAL ENGINE --- //
+momentumBodyMult= input.float(0.5, "Momentum Body Mult", step=0.05, group="Institutional Engine", tooltip="Multiplier for avg body size. Auto-tuned if enabled.")
+momentumCount   = input.int(2, "Momentum Count", group="Institutional Engine", tooltip="Number of strong candles required to validate an imbalance.")
+maxZoneSizeATR  = input.float(1.8, "Max Zone Size (ATR)", group="Institutional Engine", tooltip="Clamps giant zones so they don't consume the screen.")
+mergeOverlap    = input.bool(true, "Merge Overlapping Zones", group="Institutional Engine", tooltip="Merges intersecting zones into stronger blocks.")
+minZoneDuration = input.int(5, "Min Zone Duration (Bars)", group="Institutional Engine", tooltip="Hides micro-zones that immediately fail.")
+mergeAtrFrac    = input.float(0.3, "Zone Merge Dist (ATR)", step=0.05, group="Institutional Engine", tooltip="Merge zones closer than this.")
+decayFactor     = input.int(800, "Decay Factor (Bars)", group="Institutional Engine", tooltip="Reduces strength as a zone ages.")
+
+// --- PIVOT ZONES S&R --- //
+left            = input.int(12, "Look Left", group="Pivot Zones")    
+right           = input.int(12, "Look Right", group="Pivot Zones")    
+nPiv            = input.int(10, "Max Pivot Memory", group="Pivot Zones")
+atrLen          = input.int(20, "ATR Length", group="Pivot Zones")
+mult            = input.float(0.5, "Zone Width (ATR)", group="Pivot Zones", step=0.1)
+per             = input.float(4, "Max Zone Percent", group="Pivot Zones")
+src             = input.string("High/Low", "Source For Pivots", group="Pivot Zones", options=["HA", "High/Low Body", "High/Low"])
+extend          = input.bool(false, "Extend Right", group="Pivot Zones")
+lLab            = input.bool(false, "Show Level Labels", group="Pivot Zones")
+flipZones       = input.bool(true, "Flip Zones on Break (Polarity)", group="Pivot Zones")
+keepHistory     = input.bool(true, "Show Elite Broken Zones", group="Pivot Zones", tooltip="Leaves historical marks ONLY for major Elite levels that break.") 
+
+// --- SUPPLY & DEMAND ZONES --- //
+candleDifferenceScale = input.float(1.8, "Zone Difference Scale", group="Supply & Demand Zones")
+zoneOffset      = input.int(15, "Zone Extension (Bars)", group="Supply & Demand Zones")
+supplyEnable    = input.bool(true, "Enable Supply Zones", group="Supply & Demand Aesthetics")
+supplyColor     = input.color(color.rgb(242, 54, 69, 94), "Supply BG", group="Supply & Demand Aesthetics")
+supplyBorderCol = input.color(color.rgb(209, 212, 220, 90), "Supply Brdr", group="Supply & Demand Aesthetics")
+demandEnable    = input.bool(true, "Enable Demand Zones", group="Supply & Demand Aesthetics")
+demandColor     = input.color(color.rgb(76, 175, 80, 94), "Demand BG", group="Supply & Demand Aesthetics")
+demandBorderCol = input.color(color.rgb(209, 212, 220, 80), "Demand Brdr", group="Supply & Demand Aesthetics")
+textEnable      = input.bool(true, "Display S&D Text", group="Supply & Demand Aesthetics")
+textColor       = input.color(color.rgb(255, 255, 255), 'Text Color', group="Supply & Demand Aesthetics")
+textSize        = input.string("Small", "Text Size", group="Supply & Demand Aesthetics", options=["Auto", "Tiny", "Small", "Normal", "Large", "Huge"])
+
+dispForming     = input.bool(false, "Show Forming S&D Zones", group="Supply & Demand Timeframes")
+display30m      = input.bool(false, "Show 30m Zones", group="Supply & Demand Timeframes")
+display1h       = input.bool(true, "Show 1h Zones", group="Supply & Demand Timeframes")
+display4h       = input.bool(true, "Show 4h Zones", group="Supply & Demand Timeframes")
+displayD        = input.bool(false, "Show Daily Zones", group="Supply & Demand Timeframes")
+displayW        = input.bool(false, "Show Weekly Zones", group="Supply & Demand Timeframes")
+
+// --- FILTERS --- //
+dhighs          = input.bool(true, "Detect Pivot Highs", group="Detection")
+dlows           = input.bool(true, "Detect Pivot Lows", group="Detection")
+volLen          = input.int(20, "Volume SMA Length", group="Volume Filter")
+volThresh       = input.float(20.0, "Volume Surge Threshold (%)", group="Volume Filter")
+
+// --- SCORING & AESTHETICS --- //
+useSimpleScore  = input.bool(false, "Use Scalping Scoring", group="Zone Strength", tooltip="Checked: Extremely reactive. Unchecked: Accuracy-weighted.")
+
+bullBorder      = input.color(color.new(#64b5f6, 60), "Bull Border", group="Pivot Color")
+bearBorder      = input.color(color.new(#ffeb3b, 60), "Bear Border", group="Pivot Color")   
+
+// =============================================================== //
+// 🔥 UNIVERSAL ASSET DETECTOR & DYNAMIC MATRIX TUNING (UPGRADED)
+// =============================================================== //
+sym = str.upper(syminfo.ticker)
+
+// 1. MACRO
+// Yields, DXY, VIX. Used "US30Y" instead of "US30" to prevent collision with the Dow Jones US30 Index.
+isMacro = str.contains(sym, "US0") or str.contains(sym, "US10") or str.contains(sym, "US20") or str.contains(sym, "US30Y") or str.contains(sym, "DXY") or str.contains(sym, "VIX")
+
+// 2. METALS (GOLD)
+// Gold: "GC" catches GC1! & MGC1!
+isGold = str.contains(sym, "XAU") or str.contains(sym, "GOLD") or str.contains(sym, "GC") or str.contains(sym, "QO")
+
+// 3. METALS (SILVER)
+// Silver + Copper: Added XCU, HG, QC to Silver as requested. "SI1!" is used instead of "SI" to prevent clashing with Forex pair SIR1!.
+isSilver = str.contains(sym, "XAG") or str.contains(sym, "SIL") or str.contains(sym, "SI1!") or str.contains(sym, "QI") or str.contains(sym, "XCU") or str.contains(sym, "COPPER") or str.contains(sym, "HG") or str.contains(sym, "QC")
+
+// 4. ENERGY
+// CL catches CL1! & MCL1!. NG catches NG1! & MNG1!. 
+isEnergy = str.contains(sym, "WTI") or str.contains(sym, "XTI") or str.contains(sym, "USOIL") or str.contains(sym, "CRUDE") or str.contains(sym, "XBR") or str.contains(sym, "BCO") or str.contains(sym, "BRENT") or str.contains(sym, "UKOIL") or str.contains(sym, "CL") or str.contains(sym, "QM") or str.contains(sym, "NG") or str.contains(sym, "BZ") or str.contains(sym, "BB") or str.contains(sym, "MBC") or str.contains(sym, "CY") 
+
+// 5. CRYPTO
+// Base tickers cover all variations (e.g., "BTC" covers BTCUSDT, BTCUSD, BTC1!. "MBT" covers MBT1!)
+isCrypto = syminfo.type == "crypto" or str.contains(sym, "BTC") or str.contains(sym, "MBT") or str.contains(sym, "ETH") or str.contains(sym, "MET") or str.contains(sym, "SOL") or str.contains(sym, "MSL") or str.contains(sym, "XRP") or str.contains(sym, "MXP") or str.contains(sym, "BNB")
+
+// 6. INDICES
+// Compressed base tickers: ES catches ES1!/MES1!, NQ catches NQ1!/MNQ1!, YM catches YM1!/MYM1!
+isIndex = syminfo.type == "index" or str.contains(sym, "SPX") or str.contains(sym, "SP500") or str.contains(sym, "US500") or str.contains(sym, "NAS") or str.contains(sym, "NDX") or str.contains(sym, "NDQ") or str.contains(sym, "USTEC") or str.contains(sym, "DJI") or str.contains(sym, "US30") or str.contains(sym, "DAX") or str.contains(sym, "DE40") or str.contains(sym, "UK100") or str.contains(sym, "JP225") or str.contains(sym, "NIFTY") or str.contains(sym, "SENSEX") or str.contains(sym, "ES") or str.contains(sym, "NQ") or str.contains(sym, "YM") or str.contains(sym, "RTY") or str.contains(sym, "M2K") or str.contains(sym, "FDX") or str.contains(sym, "FESX") or str.contains(sym, "FSXE") or str.contains(sym, "FTUK") or str.contains(sym, "NKD") or str.contains(sym, "MNK")
+
+// 7. FOREX
+// Spot Forex
+isSpotForex = str.contains(sym, "USD") or str.contains(sym, "EUR") or str.contains(sym, "GBP") or str.contains(sym, "JPY") or str.contains(sym, "AUD") or str.contains(sym, "CAD") or str.contains(sym, "CHF") or str.contains(sym, "NZD") or str.contains(sym, "INR")
+// CME Futures (e.g., 6E catches 6E1! & M6E1!)
+isCMEForex = str.contains(sym, "6E") or str.contains(sym, "6J") or str.contains(sym, "6B") or str.contains(sym, "6S") or str.contains(sym, "6A") or str.contains(sym, "6C") or str.contains(sym, "6N") or str.contains(sym, "MJY") or str.contains(sym, "MSF") or str.contains(sym, "MCD") or str.contains(sym, "SIR") or str.contains(sym, "MIR")
+
+isForex = syminfo.type == "forex" or isCMEForex or isSpotForex
+
+// 8. OVERRIDE / FILTER
+// Prevent assets containing "USD" (like BTCUSD, USOIL, XAUUSD) from being incorrectly flagged as Forex.
+if isMacro or isGold or isSilver or isEnergy or isCrypto or isIndex
+    isForex := false
+
+// FINAL ASSIGNMENT (Ordered by Priority)
+assetType = isMacro ? "MACRO" : isGold ? "GOLD" : isSilver ? "SILVER" : isEnergy ? "ENERGY" : isCrypto ? "CRYPTO" : isIndex ? "INDEX" : isForex ? "FOREX" : "OTHER"
+
+g_decay = 600, g_mom = 0.50, g_nPiv = 8 
+s_decay = 650, s_mom = 0.45, s_nPiv = 8 
+c_decay = 500, c_mom = 0.50, c_nPiv = 8 
+f_decay = 900, f_mom = 0.40, f_nPiv = 10 
+i_decay = 700, i_mom = 0.45, i_nPiv = 10 
+e_decay = 800, e_mom = 0.45, e_nPiv = 10
+avg_decay = 700, avg_mom = 0.50, avg_nPiv = 10 
+
+var int dyn_decayFactor = useAutoAsset ? (assetType == "GOLD" ? g_decay : assetType == "SILVER" ? s_decay : assetType == "CRYPTO" ? c_decay : assetType == "FOREX" ? f_decay : assetType == "INDEX" ? i_decay : assetType == "ENERGY" ? e_decay : avg_decay) : decayFactor
+var float dyn_momentumBodyMult = useAutoAsset ? (assetType == "GOLD" ? g_mom : assetType == "SILVER" ? s_mom : assetType == "CRYPTO" ? c_mom : assetType == "FOREX" ? f_mom : assetType == "INDEX" ? i_mom : assetType == "ENERGY" ? e_mom : avg_mom) : momentumBodyMult
+var int dyn_nPiv = useAutoAsset ? (assetType == "GOLD" ? g_nPiv : assetType == "SILVER" ? s_nPiv : assetType == "CRYPTO" ? c_nPiv : assetType == "FOREX" ? f_nPiv : assetType == "INDEX" ? i_nPiv : assetType == "ENERGY" ? e_nPiv : avg_nPiv) : nPiv
+
+// ================================================================================================= //
+// ===================================== v6 UDT & VARIABLES ======================================== //
+// ================================================================================================= //
+
+type zoneObj
+    float top
+    float btm
+    bool isBull
+    int birthBar
+    int touches
+    int lastTouchTime
+    float maxReaction
+    int volBonus
+    int htfBonus
+    int reactionBonus
+    box visBox
+    line topLn
+    line btmLn
+    label lvlLbl
+
+type mtfZone
+    box b
+    string txt
+
+var array<zoneObj> highZones = array.new<zoneObj>()
+var array<zoneObj> lowZones = array.new<zoneObj>()
+
+labUp           = label.style_label_up
+labDn           = label.style_label_down
+confirmed       = barstate.isconfirmed
+extrap          = extend ? extend.right : extend.none
+haSrc           = src == "HA"  
+hiLoSrc         = src == "High/Low"
+atr             = ta.atr(atrLen)
+curTFMS         = timeframe.in_seconds(timeframe.period) * 1000
+insideLookback  = bar_index > last_bar_index - maxBarsBack
+
+currentTimeframe = timeframe.period
+if currentTimeframe == 'D'
+    currentTimeframe := '1440'
+if currentTimeframe == 'W'
+    currentTimeframe := '10080'
+    
+momentCTD = math.round(time(timeframe.period) + (zoneOffset * 60000 * str.tonumber(currentTimeframe)))
+var string tSize = textSize == 'Auto' ? size.auto : textSize == 'Tiny' ? size.tiny : textSize == 'Small' ? size.small : textSize == 'Normal' ? size.normal : textSize == 'Large' ? size.large : size.huge
+
+var array<mtfZone> supply_HT = array.new<mtfZone>()
+var array<mtfZone> demand_HT = array.new<mtfZone>()
+
+// ================================== //
+// ---> Functional Declarations <---- //
+// ================================== //
+
+_haBody() =>
+    haClose = (open + high + low + close) / 4
+    haOpen = float(na)
+    haOpen := na(haOpen[1]) ? (open + close) / 2 : (nz(haOpen[1]) + nz(haClose[1])) / 2
+    [haOpen, haClose]
+
+avgVol = ta.sma(volume,volLen)
+
+// --- EMA Volume Oscillator & Wick Fakeout Filters ---
+volShort = ta.ema(volume, 5)
+volLong  = ta.ema(volume, 10)
+volOsc   = 100 * (volShort - volLong) / volLong
+hasVolumeSurge = volOsc > volThresh
+
+candleBody = math.abs(close - open)
+upperWick  = high - math.max(open, close)
+lowerWick  = math.min(open, close) - low
+isBearWick = upperWick > candleBody
+isBullWick = lowerWick > candleBody
+
+// 🟢 SIMPLIFIED COLOR ENGINE (Elite vs Strong ONLY)
+getZoneColor(isElite, isBull) =>
+    if isElite
+        isBull ? color.new(#00c853, 85) : color.new(#ff1744, 85)   // ELITE (Darker/Stronger)
+    else
+        isBull ? color.new(#69f0ae, 97) : color.new(#ff8a80, 97)   // STRONG (Lighter)
+
+getBorderColor(isBull) =>
+    isBull ? bullBorder : bearBorder
+
+method deleteVis(zoneObj z) =>
+    if not na(z.visBox)
+        box.delete(z.visBox)
+    if not na(z.topLn)
+        line.delete(z.topLn)
+    if not na(z.btmLn)
+        line.delete(z.btmLn)
+    if not na(z.lvlLbl)
+        label.delete(z.lvlLbl)
+
+// 🟢 RETIRE VIS METHOD (HISTORICAL ZONES)
+method retireVis(zoneObj z) =>
+    if keepHistory and not na(z.visBox) 
+        box.set_right(z.visBox, bar_index)
+        box.set_extend(z.visBox, extend.none)
+        
+        if not na(z.topLn)
+            line.set_x2(z.topLn, bar_index)
+            line.set_extend(z.topLn, extend.none)
+        if not na(z.btmLn)
+            line.set_x2(z.btmLn, bar_index)
+            line.set_extend(z.btmLn, extend.none)
+            
+        if not na(z.lvlLbl)
+            label.delete(z.lvlLbl)
+    else
+        z.deleteVis()
+
+clampZone(float top, float btm, float _atr) =>
+    float zTop = top
+    float zBtm = btm
+    float sz = zTop - zBtm
+    float maxSz = _atr * maxZoneSizeATR
+    if sz > maxSz
+        diff = sz - maxSz
+        zTop -= diff / 2
+        zBtm += diff / 2
+    [zTop, zBtm]
+
+method combineOverlapping(array<zoneObj> arr, float _atr) =>
+    if mergeOverlap and arr.size() > 1
+        bool merged = true
+        while merged and arr.size() > 1
+            merged := false
+            for i = arr.size() - 1 to 1
+                if arr.size() < 2
+                    break
+                z1 = arr.get(i)
+                for j = i - 1 to 0
+                    if (i - j) > 5 
+                        break
+                    
+                    z2 = arr.get(j)
+                    if math.min(z1.top, z2.top) > math.max(z1.btm, z2.btm)
+                        z2.top := math.max(z1.top, z2.top)
+                        z2.btm := math.min(z1.btm, z2.btm)
+                        [newT, newB] = clampZone(z2.top, z2.btm, _atr)
+                        z2.top := newT
+                        z2.btm := newB
+                        z2.volBonus += 1
+                        z1.deleteVis() 
+                        arr.remove(i)
+                        merged := true
+                        break 
+                if merged
+                    break 
+
+mergeMTFBoxes(array<mtfZone> zoneArray) =>
+    if mergeOverlap and zoneArray.size() > 1
+        bool merged = true
+        while merged and zoneArray.size() > 1
+            merged := false
+            for i = zoneArray.size() - 1 to 1
+                if zoneArray.size() < 2
+                    break
+                mtfZone z1 = zoneArray.get(i)
+                for j = i - 1 to 0
+                    if (i - j) > 5
+                        break
+                    mtfZone z2 = zoneArray.get(j)
+                    float t1 = box.get_top(z1.b)
+                    float btm1 = box.get_bottom(z1.b)
+                    float t2 = box.get_top(z2.b)
+                    float btm2 = box.get_bottom(z2.b)
+                    
+                    if math.min(t1, t2) >= math.max(btm1, btm2)
+                        float newTop = math.max(t1, t2)
+                        float newBtm = math.min(btm1, btm2)
+                        box.set_top(z2.b, newTop)
+                        box.set_bottom(z2.b, newBtm)
+                        
+                        string txt1 = str.replace_all(z1.txt, " (Forming)", "")
+                        string txt2 = str.replace_all(z2.txt, " (Forming)", "")
+                        if not str.contains(txt2, txt1)
+                            z2.txt := txt2 + " + " + txt1
+                            box.set_text(z2.b, z2.txt)
+                        
+                        box.delete(z1.b)
+                        zoneArray.remove(i)
+                        merged := true
+                        break
+                if merged
+                    break
+
+createSupplyDemandZones(tf) =>
+    [open_HT, high_HT, low_HT, close_HT] = request.security(syminfo.tickerid, tf, [open[1], high[1], low[1], close[1]], lookahead = barmerge.lookahead_on)
+    var string tfForm = tf == '1' ? '1m' : tf == '5' ? '5m' : tf == '15' ? '15m' : tf == '30' ? '30m' : tf == '60' ? '1h' : tf == '240' ? '4h' : tf == 'D' ? 'D' : tf == 'W' ? 'W' : tf + 'm'
+    redCandle_HT = close_HT < open_HT
+    greenCandle_HT = close_HT > open_HT
+    neutralCandle_HT = close_HT == open_HT
+    candleChange_HT = math.abs(close_HT - open_HT)
+    var float bottomBox_HT = na
+    var float topBox_HT = na
+    momentCTD_HT = time(tf)[2]
+
+    if (((redCandle_HT and greenCandle_HT[1]) or (redCandle_HT and neutralCandle_HT[1])) and (candleChange_HT / candleChange_HT[1]) >= candleDifferenceScale and (barstate.isconfirmed[1] or dispForming) and supplyEnable and close_HT[1] >= close_HT and open_HT[1] <= open_HT)
+        if dispForming and barstate.isconfirmed[1] == false
+            tfForm := tfForm + '(Forming)'
+        topBox_HT := high_HT >= high_HT[1] ? high_HT : high_HT[1]
+        box supply = box.new(left=momentCTD_HT, top=topBox_HT, right=momentCTD, bgcolor=supplyColor, bottom=open_HT[1], xloc=xloc.bar_time, border_color=supplyBorderCol)
+        if textEnable
+            box.set_text(supply, tfForm)
+            box.set_text_size(supply, tSize)
+            box.set_text_color(supply, textColor)
+            box.set_text_halign(supply, text.align_right)
+            box.set_text_valign(supply, text.align_bottom)
+        array.push(supply_HT, mtfZone.new(supply, tfForm))
+
+    if (((greenCandle_HT and redCandle_HT[1]) or (greenCandle_HT and neutralCandle_HT[1])) and (candleChange_HT / candleChange_HT[1]) >= candleDifferenceScale and (barstate.isconfirmed[1] or dispForming) and demandEnable and close_HT[1] <= close_HT and open_HT[1] >= open_HT)
+        if dispForming and barstate.isconfirmed[1] == false
+            tfForm := tfForm + ' (Forming)'   
+        bottomBox_HT := low_HT <= low_HT[1] ? low_HT : low_HT[1]
+        box demand = box.new(left=momentCTD_HT, top=open_HT[1], right=momentCTD, bottom=bottomBox_HT, bgcolor=demandColor, xloc=xloc.bar_time, border_color=demandBorderCol)
+        if textEnable
+            box.set_text(demand, tfForm)
+            box.set_text_size(demand, tSize)
+            box.set_text_color(demand, textColor)
+            box.set_text_halign(demand, text.align_right)
+            box.set_text_valign(demand, text.align_top)
+        array.push(demand_HT, mtfZone.new(demand, tfForm))
+
+getMomentumCandleCount(int lastBars, float reqMult) =>
+    int bearishCnt = 0
+    int bullishCnt = 0
+    averageBodySize = ta.sma(math.abs(close - open), 20)
+    bodySize = math.abs(close - open)
+    for i = 0 to lastBars - 1
+        if bodySize[i] >= averageBodySize[i] * reqMult
+            if close[i] > open[i]
+                bullishCnt += 1
+            else
+                bearishCnt += 1
+    [bullishCnt, bearishCnt]
+
+[bullishMomentum, bearishMomentum] = getMomentumCandleCount(right, dyn_momentumBodyMult)
+averageBodySize = ta.sma(math.abs(close - open), 20)
+
+// ================================== //
+// ----> Variable Calculations <----- //
+// ================================== //
+[open_, close_] = _haBody()
+hiHaBod         = math.max (close_, open_)
+loHaBod         = math.min (close_, open_)
+hiBod           = math.max (close,  open)
+loBod           = math.min (close,  open)
+
+srcHigh         = haSrc ? hiHaBod : hiLoSrc ? high : hiBod
+srcLow          = haSrc ? loHaBod : hiLoSrc ? low  : loBod
+
+atrVol = ta.atr(200)
+highVolatilityBar = (high - low) >= (2 * atrVol)
+
+parsedHigh = highVolatilityBar ? low : srcHigh
+parsedLow  = highVolatilityBar ? high : srcLow
+
+pivot_high      = ta.pivothigh (parsedHigh, left, right)
+pivot_low       = ta.pivotlow  (parsedLow,  left, right)
+
+[htfPivH, htfPivL] = request.security(syminfo.tickerid, htfRes, [ta.pivothigh(parsedHigh, left, right), ta.pivotlow(parsedLow, left, right)], lookahead=barmerge.lookahead_on)
+
+perc            = close * (per/100)
+band            = math.min(atr*mult, perc)[right] / 2
+
+// ================================== //
+// -------> INSTITUTIONAL UDT <------ //
+// ================================== //
+if insideLookback and confirmed
+
+    if dhighs and not na(pivot_high)
+        bool merged = false
+        int isHTF = useMTF and not na(htfPivH) ? 2 : 0
+        int vBns = volume[right] > avgVol[right] * 1.5 ? 1 : 0
+        float HH = pivot_high + band
+        float HL = pivot_high - band
+        
+        [clampedHH, clampedHL] = clampZone(HH, HL, atr) 
+        HH := clampedHH
+        HL := clampedHL
+        
+        for z in highZones
+            if not z.isBull and math.abs(z.top - pivot_high) < (atr * mergeAtrFrac)
+                z.top := math.max(z.top, HH)
+                z.btm := math.min(z.btm, HL)
+                z.volBonus += 1 
+                merged := true
+                break
+        
+        if not merged
+            // 🟢 ADAPTIVE ZONE SPACING FILTER (Crypto/Forex tuned)
+            float minSpacing = atr * (assetType == "CRYPTO" ? 0.3 : assetType == "FOREX" ? 0.5 : 0.4)
+            bool tooClose = false
+            for existingZone in highZones
+                if math.abs(existingZone.top - HH) < minSpacing
+                    tooClose := true
+                    break
+            
+            if not tooClose
+                // 🟢 SMART STRUCTURAL FILTER: REQUIRES BEARISH MOMENTUM (SUPPLY)
+                bool strongMove = bearishMomentum >= momentumCount
+                float impulse = math.abs(close[right] - open[right])
+                bool displacement = impulse > (averageBodySize[right] * dyn_momentumBodyMult * 1.2)
+                
+                if strongMove and (displacement or vBns == 1)
+                    // 🟢 WEAKEST ZONE DELETION WITH HTF PROTECTION
+                    int maxZones = dyn_nPiv 
+                    if highZones.size() >= maxZones
+                        int weakestIndex = 0
+                        float weakestScore = 999999.0
+                        
+                        for i = 0 to highZones.size() - 1
+                            ztmp = highZones.get(i)
+                            float scoreTmp = ztmp.touches + ztmp.volBonus + ztmp.htfBonus
+                            
+                            // HTF Protection
+                            if scoreTmp <= weakestScore and ztmp.htfBonus > 0
+                                continue
+                            
+                            if scoreTmp < weakestScore
+                                weakestScore := scoreTmp
+                                weakestIndex := i
+                        
+                        highZones.get(weakestIndex).deleteVis()
+                        highZones.remove(weakestIndex)
+                    
+                    z = zoneObj.new(HH, HL, false, bar_index[right], 1, time[right], 0, vBns, isHTF, 0, na, na, na, na)
+                    array.push(highZones, z)
+
+    if dlows and not na(pivot_low)
+        bool merged = false
+        int isHTF = useMTF and not na(htfPivL) ? 2 : 0
+        int vBns = volume[right] > avgVol[right] * 1.5 ? 1 : 0
+        float LH = pivot_low + band
+        float LL = pivot_low - band
+        
+        [clampedLH, clampedLL] = clampZone(LH, LL, atr) 
+        LH := clampedLH
+        LL := clampedLL
+        
+        for z in lowZones
+            if z.isBull and math.abs(z.btm - pivot_low) < (atr * mergeAtrFrac)
+                z.top := math.max(z.top, LH)
+                z.btm := math.min(z.btm, LL)
+                z.volBonus += 1 
+                merged := true
+                break
+        
+        if not merged
+            // 🟢 ADAPTIVE ZONE SPACING FILTER (Crypto/Forex tuned)
+            float minSpacing = atr * (assetType == "CRYPTO" ? 0.3 : assetType == "FOREX" ? 0.5 : 0.4)
+            bool tooClose = false
+            for existingZone in lowZones
+                if math.abs(existingZone.top - LH) < minSpacing
+                    tooClose := true
+                    break
+                    
+            if not tooClose
+                // 🟢 SMART STRUCTURAL FILTER: REQUIRES BULLISH MOMENTUM (DEMAND)
+                bool strongMove = bullishMomentum >= momentumCount
+                float impulse = math.abs(close[right] - open[right])
+                bool displacement = impulse > (averageBodySize[right] * dyn_momentumBodyMult * 1.2)
+                
+                if strongMove and (displacement or vBns == 1)
+                    // 🟢 WEAKEST ZONE DELETION WITH HTF PROTECTION
+                    int maxZones = dyn_nPiv
+                    if lowZones.size() >= maxZones
+                        int weakestIndex = 0
+                        float weakestScore = 999999.0
+                        
+                        for i = 0 to lowZones.size() - 1
+                            ztmp = lowZones.get(i)
+                            float scoreTmp = ztmp.touches + ztmp.volBonus + ztmp.htfBonus
+                            
+                            // HTF Protection
+                            if scoreTmp <= weakestScore and ztmp.htfBonus > 0
+                                continue
+                            
+                            if scoreTmp < weakestScore
+                                weakestScore := scoreTmp
+                                weakestIndex := i
+                        
+                        lowZones.get(weakestIndex).deleteVis()
+                        lowZones.remove(weakestIndex)
+                    
+                    z = zoneObj.new(LH, LL, true, bar_index[right], 1, time[right], 0, vBns, isHTF, 0, na, na, na, na)
+                    array.push(lowZones, z)
+
+    highZones.combineOverlapping(atr)
+    lowZones.combineOverlapping(atr)
+
+// ================================================================================================= //
+// =========================> ARPAN'S SMC POLARITY ENGINE <========================================= //
+// ================================================================================================= //
+
+processZoneArray(arr) =>
+    if array.size(arr) > 0 and insideLookback
+        for i = array.size(arr) - 1 to 0
+            z = array.get(arr, i)
+            
+            age = bar_index - z.birthBar
+            
+            // 🟢 INTELLIGENT DECAY LOGIC (Strong zones survive longer)
+            maxZoneAge = dyn_decayFactor * 2
+            
+            // 🟢 PRO SCORING SYSTEM
+            zoneScore = useSimpleScore ? (z.touches + z.volBonus + z.htfBonus + z.reactionBonus) : ((z.touches * 2) + z.volBonus + (z.htfBonus * 2) + (z.reactionBonus * 2))
+            
+            int elite_thresh  = useSimpleScore ? 5 : 10
+            int strong_thresh = useSimpleScore ? 3 : 5
+
+            bool isElite = zoneScore >= elite_thresh
+            bool isStrong = zoneScore >= strong_thresh 
+
+            // 🟢 AGE CLEANUP (Deletes weak old zones)
+            if age > maxZoneAge
+                if keepHistory and isElite
+                    z.retireVis() 
+                else
+                    z.deleteVis()
+                array.remove(arr, i)
+                continue
+            
+            invH = invalidation == "Close" ? close : high
+            invL = invalidation == "Close" ? close : low
+            isBrokenUp = invH > z.top and not z.isBull
+            isBrokenDn = invL < z.btm and z.isBull
+            
+            // 🟢 TOUCH LIMIT REMOVED (Institutions tap levels multiple times)
+            isTouch = z.isBull ? (low <= z.top and close > z.top and isBullWick) : (high >= z.btm and close < z.btm and isBearWick)
+            if isTouch
+                if time - z.lastTouchTime > curTFMS * 5 // Maintained 5-bar cooldown constraint for core zone memory
+                    z.touches += 1
+                    z.lastTouchTime := time
+                    z.maxReaction := z.isBull ? high : low
+
+            if not isTouch
+                if z.isBull and high > z.maxReaction
+                    z.maxReaction := high
+                if not z.isBull and low < z.maxReaction
+                    z.maxReaction := low
+            
+            // 🟢 FASTER REACTION BONUS
+            reactionMove = math.abs(z.maxReaction - (z.isBull ? z.top : z.btm))
+            if reactionMove > atr * 1.2
+                z.reactionBonus := math.max(z.reactionBonus, 1)
+
+            decay = math.floor(age / dyn_decayFactor)
+            finalStrength = zoneScore - decay
+
+            if finalStrength <= 0
+                z.deleteVis() 
+                array.remove(arr, i)
+                continue
+
+            // --- SMC POLARITY FLIP & BREAKOUT FIX (SMART VALIDATION) ---
+            if isBrokenUp or isBrokenDn
+                validBreak = isBrokenUp ? ((close > z.top and not isBearWick) and (hasVolumeSurge or z.htfBonus > 0)) : ((close < z.btm and not isBullWick) and (hasVolumeSurge or z.htfBonus > 0))
+                
+                if validBreak and flipZones
+                    if not na(z.visBox)
+                        box.set_right(z.visBox, bar_index)
+                        box.set_extend(z.visBox, extend.none)
+                    if not na(z.topLn)
+                        line.set_x2(z.topLn, bar_index)
+                        line.set_extend(z.topLn, extend.none)
+
+                    z.isBull := isBrokenUp ? true : false
+                    z.birthBar := bar_index
+                    z.touches := 1
+                    z.volBonus := 0
+                    z.htfBonus := 0
+                    z.reactionBonus := 0
+                    
+                    z.visBox := na
+                    z.topLn := na
+                    z.btmLn := na
+                    if not na(z.lvlLbl)
+                        label.delete(z.lvlLbl)
+                        z.lvlLbl := na
+                else
+                    // 🟢 HISTORICAL MEMORY LOGIC FIX (Only saves Elite levels)
+                    if keepHistory and isElite
+                        z.retireVis()
+                    else
+                        z.deleteVis()
+                    array.remove(arr, i)
+                    continue
+
+            // 🟢 HARD FILTER BEFORE DRAWING (MASSIVE NOISE REDUCTION)
+            if (isElite or isStrong) and age >= minZoneDuration
+                c = getZoneColor(isElite, z.isBull) 
+                bC = getBorderColor(z.isBull)
+                
+                if drawMode == "Boxes"
+                    if na(z.visBox)
+                        z.visBox := box.new(z.birthBar, z.top, bar_index, z.btm, border_color=bC, bgcolor=c, extend=extrap)
+                    else
+                        box.set_right(z.visBox, bar_index)
+                        box.set_bgcolor(z.visBox, c)
+                        box.set_border_color(z.visBox, bC)
+                        box.set_extend(z.visBox, extrap)
+                else
+                    mid = (z.top + z.btm) / 2
+                    if na(z.topLn)
+                        z.topLn := line.new(z.birthBar, mid, bar_index, mid, color=bC, width=2, extend=extrap)
+                    else
+                        line.set_x2(z.topLn, bar_index)
+                        line.set_color(z.topLn, bC)
+                        line.set_extend(z.topLn, extrap)
+
+                if lLab
+                    string priceTxt = str.tostring(z.top, format.mintick) + " - " + str.tostring(z.btm, format.mintick)
+                    float midY = (z.top + z.btm) / 2
+                    if na(z.lvlLbl)
+                        z.lvlLbl := label.new(bar_index + 3, midY, priceTxt, color=color.new(bC, 20), textcolor=textColor, style=label.style_label_left, size=size.small)
+                    else
+                        label.set_xy(z.lvlLbl, bar_index + 3, midY)
+                        label.set_text(z.lvlLbl, priceTxt)
+                        label.set_color(z.lvlLbl, color.new(bC, 20))
+                else
+                    if not na(z.lvlLbl)
+                        label.delete(z.lvlLbl)
+                        z.lvlLbl := na
+    true // Fixes compilation "Mismatched return type" errors
+
+// Execute unconditionally (Lookback is handled natively inside function)
+processZoneArray(highZones)
+processZoneArray(lowZones)
+
+// ================================== //
+// ----> S&D MTF Engine <--- //
+// ================================== //
+if display30m and str.tonumber(currentTimeframe) <= 30
+    createSupplyDemandZones('30')
+if display1h and str.tonumber(currentTimeframe) <= 60
+    createSupplyDemandZones('60') 
+if display4h and str.tonumber(currentTimeframe) <= 240
+    createSupplyDemandZones('240')
+if displayD and str.tonumber(currentTimeframe) <= 1440
+    createSupplyDemandZones('D')
+if displayW and str.tonumber(currentTimeframe) <= 10080
+    createSupplyDemandZones('W')
+
+mergeMTFBoxes(supply_HT)
+mergeMTFBoxes(demand_HT)
+
+int i_s = 0
+while i_s < array.size(supply_HT) 
+    mtfZone currentZone = array.get(supply_HT, i_s)
+    box currentBox = currentZone.b
+    if high > box.get_top(currentBox) 
+        array.remove(supply_HT, i_s)
+        box.delete(currentBox)
+    else
+        box.set_right(currentBox, momentCTD)
+        i_s += 1
+
+int i_d = 0
+while i_d < array.size(demand_HT) 
+    mtfZone currentZone = array.get(demand_HT, i_d)
+    box currentBox = currentZone.b
+    if low < box.get_bottom(currentBox) 
+        array.remove(demand_HT, i_d)
+        box.delete(currentBox)
+    else
+        box.set_right(currentBox, momentCTD)
+        i_d += 1
+
+
+// ================================== //
+// ------> Conditional Displays <---- //
+// ================================== //
+
+// Add Previous Day / Week Levels 
+pdh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead = barmerge.lookahead_on)
+pwh = request.security(syminfo.tickerid, "W", high[1], lookahead = barmerge.lookahead_on)
+pwl = request.security(syminfo.tickerid, "W", low[1],  lookahead = barmerge.lookahead_on)
+
+var line pdh_line = na
+var line pdl_line = na
+var label pdh_lbl = na
+var label pdl_lbl = na
+
+var line pwh_line = na
+var line pwl_line = na
+var label pwh_lbl = na
+var label pwl_lbl = na
+
+var int line_start_gap = 20
+var int text_pos_gap = 40
+
+if barstate.islast
+    // Daily
+    pdh_text = "PDH : " + str.tostring(pdh, format.mintick)
+    pdl_text = "PDL : " + str.tostring(pdl, format.mintick)
+    if na(pdh_line)
+        pdh_line := line.new(bar_index + line_start_gap, pdh, bar_index + line_start_gap + 1, pdh, color=color.gray, style=line.style_dashed, width=1, extend=extend.right)
+        pdl_line := line.new(bar_index + line_start_gap, pdl, bar_index + line_start_gap + 1, pdl, color=color.gray, style=line.style_dashed, width=1, extend=extend.right)
+        pdh_lbl  := label.new(bar_index + text_pos_gap, pdh, pdh_text, style=label.style_none, textcolor=color.gray, size=size.small)
+        pdl_lbl  := label.new(bar_index + text_pos_gap, pdl, pdl_text, style=label.style_none, textcolor=color.gray, size=size.small)
+    else
+        line.set_xy1(pdh_line, bar_index + line_start_gap, pdh)
+        line.set_xy2(pdh_line, bar_index + line_start_gap + 1, pdh)
+        line.set_xy1(pdl_line, bar_index + line_start_gap, pdl)
+        line.set_xy2(pdl_line, bar_index + line_start_gap + 1, pdl)
+        label.set_xy(pdh_lbl, bar_index + text_pos_gap, pdh)
+        label.set_text(pdh_lbl, pdh_text)
+        label.set_xy(pdl_lbl, bar_index + text_pos_gap, pdl)
+        label.set_text(pdl_lbl, pdl_text)
+
+    // Weekly
+    pwh_text = "PWH : " + str.tostring(pwh, format.mintick)
+    pwl_text = "PWL : " + str.tostring(pwl, format.mintick)
+    if na(pwh_line)
+        pwh_line := line.new(bar_index + line_start_gap, pwh, bar_index + line_start_gap + 1, pwh, color=color.new(color.white, 40), style=line.style_dotted, width=2, extend=extend.right)
+        pwl_line := line.new(bar_index + line_start_gap, pwl, bar_index + line_start_gap + 1, pwl, color=color.new(color.white, 40), style=line.style_dotted, width=2, extend=extend.right)
+        pwh_lbl  := label.new(bar_index + text_pos_gap, pwh, pwh_text, style=label.style_none, textcolor=color.new(color.white, 40), size=size.small)
+        pwl_lbl  := label.new(bar_index + text_pos_gap, pwl, pwl_text, style=label.style_none, textcolor=color.new(color.white, 40), size=size.small)
+    else
+        line.set_xy1(pwh_line, bar_index + line_start_gap, pwh)
+        line.set_xy2(pwh_line, bar_index + line_start_gap + 1, pwh)
+        line.set_xy1(pwl_line, bar_index + line_start_gap, pwl)
+        line.set_xy2(pwl_line, bar_index + line_start_gap + 1, pwl)
+        label.set_xy(pwh_lbl, bar_index + text_pos_gap, pwh)
+        label.set_text(pwh_lbl, pwh_text)
+        label.set_xy(pwl_lbl, bar_index + text_pos_gap, pwl)
+        label.set_text(pwl_lbl, pwl_text)
