@@ -8,11 +8,10 @@ An institutional-style **support/resistance and supply/demand zone detector** fo
 
 On-chart title: `Arpan's Support & Resistance`
 
-> **Add a chart screenshot here** — a clean before/after or annotated example is the single highest-impact addition to this README (and to a resume link).
->
-> ```md
-> ![Indicator preview](docs/preview.png)
-> ```
+## Preview
+
+![Indicator preview](Preview/Cover.png)
+
 
 ---
 
