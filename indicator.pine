@@ -325,23 +325,40 @@ var int X_TIME_STOP    = 4
 var int X_TRAIL_EXIT   = 5
 
 type zoneObj
+    int   id
     float top
     float btm
-    bool isBull
-    int birthBar
-    int touches
-    int lastTouchTime
-    float maxReaction
-    int volBonus
-    int htfBonus
-    int reactionBonus
-    box visBox
-    line topLn
-    line btmLn
+    bool  isBull
+    int   birthBar          // bar_index at confirmation (NOT pivot bar) — BUG-05 fix
+    int   birthTime
+    int   touches       = 0
+    int   qualTouches   = 0   // touches with wick ≥ threshold AND close outside
+    int   lastTouchTime = 0
+    float maxReaction   = 0.0 // BUG-04 fix: only post-touch excursion
+    bool  reactionEarned = false
+    int   reactionSpeed = 0   // bars to reach 1 ATR after touch
+    float displacement  = 0.0 // creating bar's body / ATR
+    int   volQuality    = 0   // 0 = no data, 1 = present, 2 = surge
+    int   htfBonus      = 0
+    bool  mtfConf       = false
+    bool  pdwConf       = false  // near PDH/PDL/PWH/PWL
+    int   failedBreaks  = 0     // BUG-07 fix: sweep events tracked
+    bool  flipped       = false
+    int   flipBar       = 0
+    float flipQuality   = 0.0  // BUG-08 fix: displacement + vol of the break
+    int   tier          = 0    // 0=none, 1=Strong, 2=Elite
+    float qualityScore  = 0.0  // zone quality 0-35
+    int   lastSigBar    = 0
+    int   sigCount      = 0
+    int   status        = 0    // lifecycle state
+    int   freshness     = 100  // BUG-06 fix: decays continuously (100 at birth)
+    box   visBox
+    line  topLn
+    line  btmLn
     label lvlLbl
 
 type mtfZone
-    box b
+    box    b
     string txt
 
 var array<zoneObj> highZones = array.new<zoneObj>()
