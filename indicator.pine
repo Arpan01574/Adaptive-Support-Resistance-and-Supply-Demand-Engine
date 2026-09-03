@@ -809,234 +809,40 @@ method combineOverlapping(array<zoneObj> arr, float _atr) =>
                         break
                 if merged
                     break
+    true
 
-createSupplyDemandZones(tf) =>
-    [open_HT, high_HT, low_HT, close_HT] = request.security(syminfo.tickerid, tf, [open[1], high[1], low[1], close[1]], lookahead = barmerge.lookahead_on)
-    var string tfForm = tf == '1' ? '1m' : tf == '5' ? '5m' : tf == '15' ? '15m' : tf == '30' ? '30m' : tf == '60' ? '1h' : tf == '240' ? '4h' : tf == 'D' ? 'D' : tf == 'W' ? 'W' : tf + 'm'
-    redCandle_HT = close_HT < open_HT
-    greenCandle_HT = close_HT > open_HT
-    neutralCandle_HT = close_HT == open_HT
-    candleChange_HT = math.abs(close_HT - open_HT)
-    var float bottomBox_HT = na
-    var float topBox_HT = na
-    momentCTD_HT = time(tf)[2]
+// ============================================================================================
+// ZONE CREATION  (BUG-05, BUG-08, BUG-09, BUG-12, MATH-03/04 fixes applied)
+// ============================================================================================
+f_addZone(bool doAdd, bool isBullZone, float pivotPx, bool fvgConf, float depStr) =>
+    if doAdd
+        float zT = pivotPx + bandR
+        float zB = pivotPx - bandR
+        [cT, cB] = clampZone(zT, zB, atr)
+        zT := cT
+        zB := cB
 
-    if (((redCandle_HT and greenCandle_HT[1]) or (redCandle_HT and neutralCandle_HT[1])) and (candleChange_HT / candleChange_HT[1]) >= candleDifferenceScale and (barstate.isconfirmed[1] or dispForming) and supplyEnable and close_HT[1] >= close_HT and open_HT[1] <= open_HT)
-        if dispForming and barstate.isconfirmed[1] == false
-            tfForm := tfForm + '(Forming)'
-        topBox_HT := high_HT >= high_HT[1] ? high_HT : high_HT[1]
-        box supply = box.new(left=momentCTD_HT, top=topBox_HT, right=momentCTD, bgcolor=supplyColor, bottom=open_HT[1], xloc=xloc.bar_time, border_color=supplyBorderCol)
-        if textEnable
-            box.set_text(supply, tfForm)
-            box.set_text_size(supply, tSize)
-            box.set_text_color(supply, textColor)
-            box.set_text_halign(supply, text.align_right)
-            box.set_text_valign(supply, text.align_bottom)
-        array.push(supply_HT, mtfZone.new(supply, tfForm))
-
-    if (((greenCandle_HT and redCandle_HT[1]) or (greenCandle_HT and neutralCandle_HT[1])) and (candleChange_HT / candleChange_HT[1]) >= candleDifferenceScale and (barstate.isconfirmed[1] or dispForming) and demandEnable and close_HT[1] <= close_HT and open_HT[1] >= open_HT)
-        if dispForming and barstate.isconfirmed[1] == false
-            tfForm := tfForm + ' (Forming)'   
-        bottomBox_HT := low_HT <= low_HT[1] ? low_HT : low_HT[1]
-        box demand = box.new(left=momentCTD_HT, top=open_HT[1], right=momentCTD, bottom=bottomBox_HT, bgcolor=demandColor, xloc=xloc.bar_time, border_color=demandBorderCol)
-        if textEnable
-            box.set_text(demand, tfForm)
-            box.set_text_size(demand, tSize)
-            box.set_text_color(demand, textColor)
-            box.set_text_halign(demand, text.align_right)
-            box.set_text_valign(demand, text.align_top)
-        array.push(demand_HT, mtfZone.new(demand, tfForm))
-
-getMomentumCandleCount(int lastBars, float reqMult) =>
-    int bearishCnt = 0
-    int bullishCnt = 0
-    averageBodySize = ta.sma(math.abs(close - open), 20)
-    bodySize = math.abs(close - open)
-    for i = 0 to lastBars - 1
-        if bodySize[i] >= averageBodySize[i] * reqMult
-            if close[i] > open[i]
-                bullishCnt += 1
-            else
-                bearishCnt += 1
-    [bullishCnt, bearishCnt]
-
-[bullishMomentum, bearishMomentum] = getMomentumCandleCount(right, dyn_momentumBodyMult)
-averageBodySize = ta.sma(math.abs(close - open), 20)
-
-// ================================== //
-// ----> Variable Calculations <----- //
-// ================================== //
-[open_, close_] = _haBody()
-hiHaBod         = math.max (close_, open_)
-loHaBod         = math.min (close_, open_)
-hiBod           = math.max (close,  open)
-loBod           = math.min (close,  open)
-
-srcHigh         = haSrc ? hiHaBod : hiLoSrc ? high : hiBod
-srcLow          = haSrc ? loHaBod : hiLoSrc ? low  : loBod
-
-atrVol = ta.atr(200)
-highVolatilityBar = (high - low) >= (2 * atrVol)
-
-parsedHigh = highVolatilityBar ? low : srcHigh
-parsedLow  = highVolatilityBar ? high : srcLow
-
-pivot_high      = ta.pivothigh (parsedHigh, left, right)
-pivot_low       = ta.pivotlow  (parsedLow,  left, right)
-
-[htfPivH, htfPivL] = request.security(syminfo.tickerid, htfRes, [ta.pivothigh(parsedHigh, left, right), ta.pivotlow(parsedLow, left, right)], lookahead=barmerge.lookahead_on)
-
-perc            = close * (per/100)
-band            = math.min(atr*mult, perc)[right] / 2
-
-// ================================== //
-// -------> INSTITUTIONAL UDT <------ //
-// ================================== //
-if insideLookback and confirmed
-
-    if dhighs and not na(pivot_high)
+        // BUG-09 fix: check for duplicate across the single array
         bool merged = false
-        int isHTF = useMTF and not na(htfPivH) ? 2 : 0
-        int vBns = volume[right] > avgVol[right] * 1.5 ? 1 : 0
-        float HH = pivot_high + band
-        float HL = pivot_high - band
-        
-        [clampedHH, clampedHL] = clampZone(HH, HL, atr) 
-        HH := clampedHH
-        HL := clampedHL
-        
-        for z in highZones
-            if not z.isBull and math.abs(z.top - pivot_high) < (atr * mergeAtrFrac)
-                z.top := math.max(z.top, HH)
-                z.btm := math.min(z.btm, HL)
-                z.volBonus += 1 
+        float tolM = atr * mergeAtrFrac
+        for z in zones
+            if z.isBull == isBullZone and pivotPx >= z.btm - tolM and pivotPx <= z.top + tolM
+                z.top := math.max(z.top, zT)
+                z.btm := math.min(z.btm, zB)
+                [mT, mB] = clampZone(z.top, z.btm, atr)
+                z.top := mT
+                z.btm := mB
+                z.volQuality := math.max(z.volQuality, volState)
                 merged := true
                 break
-        
+
         if not merged
-            // 🟢 ADAPTIVE ZONE SPACING FILTER (Crypto/Forex tuned)
-            float minSpacing = atr * (assetType == "CRYPTO" ? 0.3 : assetType == "FOREX" ? 0.5 : 0.4)
+            float minSp = atr * dyn_space
             bool tooClose = false
-            for existingZone in highZones
-                if math.abs(existingZone.top - HH) < minSpacing
+            for ez in zones
+                if math.abs(ez.top - zT) < minSp and ez.isBull == isBullZone
                     tooClose := true
                     break
-            
-            if not tooClose
-                // 🟢 SMART STRUCTURAL FILTER: REQUIRES BEARISH MOMENTUM (SUPPLY)
-                bool strongMove = bearishMomentum >= momentumCount
-                float impulse = math.abs(close[right] - open[right])
-                bool displacement = impulse > (averageBodySize[right] * dyn_momentumBodyMult * 1.2)
-                
-                if strongMove and (displacement or vBns == 1)
-                    // 🟢 WEAKEST ZONE DELETION WITH HTF PROTECTION
-                    int maxZones = dyn_nPiv 
-                    if highZones.size() >= maxZones
-                        int weakestIndex = 0
-                        float weakestScore = 999999.0
-                        
-                        for i = 0 to highZones.size() - 1
-                            ztmp = highZones.get(i)
-                            float scoreTmp = ztmp.touches + ztmp.volBonus + ztmp.htfBonus
-                            
-                            // HTF Protection
-                            if scoreTmp <= weakestScore and ztmp.htfBonus > 0
-                                continue
-                            
-                            if scoreTmp < weakestScore
-                                weakestScore := scoreTmp
-                                weakestIndex := i
-                        
-                        highZones.get(weakestIndex).deleteVis()
-                        highZones.remove(weakestIndex)
-                    
-                    z = zoneObj.new(HH, HL, false, bar_index[right], 1, time[right], 0, vBns, isHTF, 0, na, na, na, na)
-                    array.push(highZones, z)
-
-    if dlows and not na(pivot_low)
-        bool merged = false
-        int isHTF = useMTF and not na(htfPivL) ? 2 : 0
-        int vBns = volume[right] > avgVol[right] * 1.5 ? 1 : 0
-        float LH = pivot_low + band
-        float LL = pivot_low - band
-        
-        [clampedLH, clampedLL] = clampZone(LH, LL, atr) 
-        LH := clampedLH
-        LL := clampedLL
-        
-        for z in lowZones
-            if z.isBull and math.abs(z.btm - pivot_low) < (atr * mergeAtrFrac)
-                z.top := math.max(z.top, LH)
-                z.btm := math.min(z.btm, LL)
-                z.volBonus += 1 
-                merged := true
-                break
-        
-        if not merged
-            // 🟢 ADAPTIVE ZONE SPACING FILTER (Crypto/Forex tuned)
-            float minSpacing = atr * (assetType == "CRYPTO" ? 0.3 : assetType == "FOREX" ? 0.5 : 0.4)
-            bool tooClose = false
-            for existingZone in lowZones
-                if math.abs(existingZone.top - LH) < minSpacing
-                    tooClose := true
-                    break
-                    
-            if not tooClose
-                // 🟢 SMART STRUCTURAL FILTER: REQUIRES BULLISH MOMENTUM (DEMAND)
-                bool strongMove = bullishMomentum >= momentumCount
-                float impulse = math.abs(close[right] - open[right])
-                bool displacement = impulse > (averageBodySize[right] * dyn_momentumBodyMult * 1.2)
-                
-                if strongMove and (displacement or vBns == 1)
-                    // 🟢 WEAKEST ZONE DELETION WITH HTF PROTECTION
-                    int maxZones = dyn_nPiv
-                    if lowZones.size() >= maxZones
-                        int weakestIndex = 0
-                        float weakestScore = 999999.0
-                        
-                        for i = 0 to lowZones.size() - 1
-                            ztmp = lowZones.get(i)
-                            float scoreTmp = ztmp.touches + ztmp.volBonus + ztmp.htfBonus
-                            
-                            // HTF Protection
-                            if scoreTmp <= weakestScore and ztmp.htfBonus > 0
-                                continue
-                            
-                            if scoreTmp < weakestScore
-                                weakestScore := scoreTmp
-                                weakestIndex := i
-                        
-                        lowZones.get(weakestIndex).deleteVis()
-                        lowZones.remove(weakestIndex)
-                    
-                    z = zoneObj.new(LH, LL, true, bar_index[right], 1, time[right], 0, vBns, isHTF, 0, na, na, na, na)
-                    array.push(lowZones, z)
-
-    highZones.combineOverlapping(atr)
-    lowZones.combineOverlapping(atr)
-
-// ================================================================================================= //
-// =========================> ARPAN'S SMC POLARITY ENGINE <========================================= //
-// ================================================================================================= //
-
-processZoneArray(arr) =>
-    if array.size(arr) > 0 and insideLookback
-        for i = array.size(arr) - 1 to 0
-            z = array.get(arr, i)
-            
-            age = bar_index - z.birthBar
-            
-            // 🟢 INTELLIGENT DECAY LOGIC (Strong zones survive longer)
-            maxZoneAge = dyn_decayFactor * 2
-            
-            // 🟢 PRO SCORING SYSTEM
-            zoneScore = useSimpleScore ? (z.touches + z.volBonus + z.htfBonus + z.reactionBonus) : ((z.touches * 2) + z.volBonus + (z.htfBonus * 2) + (z.reactionBonus * 2))
-            
-            int elite_thresh  = useSimpleScore ? 5 : 10
-            int strong_thresh = useSimpleScore ? 3 : 5
-
-            bool isElite = zoneScore >= elite_thresh
-            bool isStrong = zoneScore >= strong_thresh 
 
             // 🟢 AGE CLEANUP (Deletes weak old zones)
             if age > maxZoneAge
