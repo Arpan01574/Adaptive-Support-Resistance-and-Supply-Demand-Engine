@@ -1,132 +1,328 @@
 //@version=6
-indicator("Arpan's Support & Resistance", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+// =============================================================================================
+//  ARPAN'S S&R + SIGNAL ENGINE   (shorttitle: ASR Engine v2 )
+// ---------------------------------------------------------------------------------------------
+//
+//  NEW ENGINES:  structure (BOS / swing state), liquidity (sweep / reclaim),
+//                regime (trend × volatility), 5 setup types.
+//  SCORING:  Zone Quality (0–35) + Setup Quality (0–35) + Context (0–30) = 0–100.
+//  TRADE ACCOUNTING:  WIN / LOSS / BREAKEVEN / TIME_EXIT reported separately.
+//
+//  NON-REPAINTING:  all HTF requests use [1] offset + lookahead_on.
+//  CONFIRMED BARS ONLY:  all state mutations gated by barstate.isconfirmed.
+//
+//  ALERT SETUP:  Create Alert → Condition "ASR Engine v2" → "Any alert() function call"
+//                → Webhook URL (HTTPS, port 443).  Requires TradingView Essential+.
+//
+//  Not financial advice.  No profitability is promised.
+// =============================================================================================
+indicator("Arpan's S&R + Signal Engine v2", shorttitle = "ASRv3", overlay = true,
+     max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 5000)
 
-// ================================== //
-// ---------> User Input <----------- //
-// ================================== //
+// ============================================================================================
+// INPUTS
+// ============================================================================================
+G_CORE  = "1 | Core Engine"
+G_INST  = "2 | Zone Quality Engine"
+G_PIV   = "3 | Pivot Zones S&R"
+G_SD    = "4 | Supply & Demand (MTF)"
+G_SDV   = "5 | S&D Aesthetics"
+G_VOL   = "6 | Volume Filter"
+G_SIG   = "7 | Signal Engine"
+G_RISK  = "8 | Risk Model & Costs"
+G_STRUCT = "9 | Market Structure"
+G_LIQ   = "10 | Liquidity Engine"
+G_REG   = "11 | Regime Engine"
+G_ALR   = "12 | Alerts / Webhook"
+G_UI    = "13 | Dashboard & Visuals"
 
-// --- CORE UPGRADES & PERFORMANCE --- //
-maxBarsBack     = input.int(2000, "Lookback Limit", group="Core Upgrades", tooltip="Limits calculations to recent bars for performance.")
-drawMode        = input.string("Boxes", "Draw Mode", options=["Boxes", "Lines"], group="Core Upgrades")
-invalidation    = input.string("Close", "Zone Invalidation", options=["Close", "Wick"], group="Core Upgrades")
-useMTF          = input.bool(true, "Use HTF Pivots", group="Core Upgrades")
-htfRes          = input.timeframe("240", "Higher Timeframe", group="Core Upgrades")
-useAutoAsset    = input.bool(true, "Auto-Tune Asset Matrix", group="Core Upgrades", tooltip="Dynamically adjusts Decay and Momentum based on Crypto/Forex/Gold.")
+// --- 1 | CORE ENGINE ---
+maxBarsBack  = input.int(3000, "Lookback Limit (bars)", minval = 200, group = G_CORE, tooltip = "Performance gate only. The canonical Python engine processes all bars.")
+drawMode     = input.string("Boxes", "Draw Mode", options = ["Boxes", "Lines"], group = G_CORE)
+invalidation = input.string("Close", "Zone Invalidation", options = ["Close", "Wick"], group = G_CORE)
+useMTF       = input.bool(true, "Use HTF Swing Confluence", group = G_CORE)
+htfRes       = input.timeframe("240", "Higher Timeframe", group = G_CORE)
+htfPivLen    = input.int(5, "HTF Swing Length", minval = 2, maxval = 20, group = G_CORE)
+htfTolATR    = input.float(0.35, "HTF Overlap Tolerance (ATR)", minval = 0.0, step = 0.05, group = G_CORE)
+useAutoAsset = input.bool(true, "Auto-Tune Asset Matrix", group = G_CORE)
+assetOverride = input.string("Auto", "Asset Override", options = ["Auto", "CRYPTO", "GOLD", "SILVER", "FOREX", "INDEX", "ENERGY", "MACRO", "OTHER"], group = G_CORE, tooltip = "Force asset class instead of auto-detection.")
+marketOverride = input.string("Auto", "Market Type Override", options = ["Auto", "SPOT", "PERPETUAL", "FUTURES", "FOREX", "CFD", "OTHER"], group = G_CORE, tooltip = "Force market type. SPOT disables shorts.")
 
-// --- ARPAN'S INSTITUTIONAL ENGINE --- //
-momentumBodyMult= input.float(0.5, "Momentum Body Mult", step=0.05, group="Institutional Engine", tooltip="Multiplier for avg body size. Auto-tuned if enabled.")
-momentumCount   = input.int(2, "Momentum Count", group="Institutional Engine", tooltip="Number of strong candles required to validate an imbalance.")
-maxZoneSizeATR  = input.float(1.8, "Max Zone Size (ATR)", group="Institutional Engine", tooltip="Clamps giant zones so they don't consume the screen.")
-mergeOverlap    = input.bool(true, "Merge Overlapping Zones", group="Institutional Engine", tooltip="Merges intersecting zones into stronger blocks.")
-minZoneDuration = input.int(5, "Min Zone Duration (Bars)", group="Institutional Engine", tooltip="Hides micro-zones that immediately fail.")
-mergeAtrFrac    = input.float(0.3, "Zone Merge Dist (ATR)", step=0.05, group="Institutional Engine", tooltip="Merge zones closer than this.")
-decayFactor     = input.int(800, "Decay Factor (Bars)", group="Institutional Engine", tooltip="Reduces strength as a zone ages.")
+// --- 2 | ZONE QUALITY ENGINE ---
+momentumBodyMult = input.float(0.5, "Momentum Body Mult", minval = 0.1, step = 0.05, group = G_INST, tooltip = "Ignored when Auto-Tune is on.")
+momentumCount    = input.int(2, "Momentum Count", minval = 1, group = G_INST)
+maxZoneSizeATR   = input.float(1.8, "Max Zone Size (ATR)", minval = 0.3, step = 0.1, group = G_INST)
+mergeOverlap     = input.bool(true, "Merge Overlapping Zones", group = G_INST)
+minZoneDuration  = input.int(3, "Min Zone Age From Confirm (Bars)", minval = 0, group = G_INST, tooltip = "BUG-05 fix: age measured from confirmation, not pivot.")
+mergeAtrFrac     = input.float(0.3, "Zone Merge Dist (ATR)", minval = 0.0, step = 0.05, group = G_INST)
+decayFactor      = input.int(800, "Decay Factor (Bars)", minval = 50, group = G_INST, tooltip = "Ignored when Auto-Tune is on.")
+displacementMult = input.float(1.5, "Displacement Body (ATR mult)", minval = 0.5, step = 0.1, group = G_INST, tooltip = "BUG/MATH-03 fix: replaces near-vacuous momentum filter. Bar body must exceed this × ATR.")
 
-// --- PIVOT ZONES S&R --- //
-left            = input.int(12, "Look Left", group="Pivot Zones")    
-right           = input.int(12, "Look Right", group="Pivot Zones")    
-nPiv            = input.int(10, "Max Pivot Memory", group="Pivot Zones")
-atrLen          = input.int(20, "ATR Length", group="Pivot Zones")
-mult            = input.float(0.5, "Zone Width (ATR)", group="Pivot Zones", step=0.1)
-per             = input.float(4, "Max Zone Percent", group="Pivot Zones")
-src             = input.string("High/Low", "Source For Pivots", group="Pivot Zones", options=["HA", "High/Low Body", "High/Low"])
-extend          = input.bool(false, "Extend Right", group="Pivot Zones")
-lLab            = input.bool(false, "Show Level Labels", group="Pivot Zones")
-flipZones       = input.bool(true, "Flip Zones on Break (Polarity)", group="Pivot Zones")
-keepHistory     = input.bool(true, "Show Elite Broken Zones", group="Pivot Zones", tooltip="Leaves historical marks ONLY for major Elite levels that break.") 
+// --- 3 | PIVOT ZONES ---
+pivL        = input.int(12, "Look Left", minval = 1, group = G_PIV)
+pivR        = input.int(12, "Look Right", minval = 1, maxval = 50, group = G_PIV)
+nPiv        = input.int(10, "Max Pivot Memory", minval = 2, maxval = 40, group = G_PIV)
+atrLen      = input.int(20, "ATR Length", minval = 1, group = G_PIV)
+zoneMult    = input.float(0.5, "Zone Width (ATR)", minval = 0.05, step = 0.05, group = G_PIV)
+maxPct      = input.float(4.0, "Max Zone Percent", minval = 0.1, step = 0.1, group = G_PIV)
+extendR     = input.bool(false, "Extend Right", group = G_PIV)
+lLab        = input.bool(false, "Show Level Labels", group = G_PIV)
+flipZones   = input.bool(true, "Flip Zones on Break (Polarity)", group = G_PIV)
+keepHistory = input.bool(true, "Show Elite Broken Zones", group = G_PIV)
+dhighs      = input.bool(true, "Detect Pivot Highs", group = G_PIV)
+dlows       = input.bool(true, "Detect Pivot Lows", group = G_PIV)
+bullBorder  = input.color(color.new(#64b5f6, 60), "Bull Border", group = G_PIV)
+bearBorder  = input.color(color.new(#ffeb3b, 60), "Bear Border", group = G_PIV)
 
-// --- SUPPLY & DEMAND ZONES --- //
-candleDifferenceScale = input.float(1.8, "Zone Difference Scale", group="Supply & Demand Zones")
-zoneOffset      = input.int(15, "Zone Extension (Bars)", group="Supply & Demand Zones")
-supplyEnable    = input.bool(true, "Enable Supply Zones", group="Supply & Demand Aesthetics")
-supplyColor     = input.color(color.rgb(242, 54, 69, 94), "Supply BG", group="Supply & Demand Aesthetics")
-supplyBorderCol = input.color(color.rgb(209, 212, 220, 90), "Supply Brdr", group="Supply & Demand Aesthetics")
-demandEnable    = input.bool(true, "Enable Demand Zones", group="Supply & Demand Aesthetics")
-demandColor     = input.color(color.rgb(76, 175, 80, 94), "Demand BG", group="Supply & Demand Aesthetics")
-demandBorderCol = input.color(color.rgb(209, 212, 220, 80), "Demand Brdr", group="Supply & Demand Aesthetics")
-textEnable      = input.bool(true, "Display S&D Text", group="Supply & Demand Aesthetics")
-textColor       = input.color(color.rgb(255, 255, 255), 'Text Color', group="Supply & Demand Aesthetics")
-textSize        = input.string("Small", "Text Size", group="Supply & Demand Aesthetics", options=["Auto", "Tiny", "Small", "Normal", "Large", "Huge"])
+// --- 4 | SUPPLY & DEMAND (MTF) ---
+candleDifferenceScale = input.float(1.8, "Zone Difference Scale", minval = 1.0, step = 0.1, group = G_SD)
+zoneOffset  = input.int(15, "Zone Extension (Bars)", minval = 1, group = G_SD)
+maxMtfBoxes = input.int(20, "Max S&D Boxes Per Side", minval = 2, maxval = 80, group = G_SD)
+display30m  = input.bool(false, "Show 30m Zones", group = G_SD)
+display1h   = input.bool(true, "Show 1h Zones", group = G_SD)
+display4h   = input.bool(true, "Show 4h Zones", group = G_SD)
+displayD    = input.bool(false, "Show Daily Zones", group = G_SD)
+displayW    = input.bool(false, "Show Weekly Zones", group = G_SD)
 
-dispForming     = input.bool(false, "Show Forming S&D Zones", group="Supply & Demand Timeframes")
-display30m      = input.bool(false, "Show 30m Zones", group="Supply & Demand Timeframes")
-display1h       = input.bool(true, "Show 1h Zones", group="Supply & Demand Timeframes")
-display4h       = input.bool(true, "Show 4h Zones", group="Supply & Demand Timeframes")
-displayD        = input.bool(false, "Show Daily Zones", group="Supply & Demand Timeframes")
-displayW        = input.bool(false, "Show Weekly Zones", group="Supply & Demand Timeframes")
+// --- 5 | S&D AESTHETICS ---
+supplyEnable    = input.bool(true, "Enable Supply Zones", group = G_SDV)
+supplyColor     = input.color(color.rgb(242, 54, 69, 94), "Supply BG", group = G_SDV)
+supplyBorderCol = input.color(color.rgb(209, 212, 220, 90), "Supply Brdr", group = G_SDV)
+demandEnable    = input.bool(true, "Enable Demand Zones", group = G_SDV)
+demandColor     = input.color(color.rgb(76, 175, 80, 94), "Demand BG", group = G_SDV)
+demandBorderCol = input.color(color.rgb(209, 212, 220, 80), "Demand Brdr", group = G_SDV)
+textEnable      = input.bool(true, "Display S&D Text", group = G_SDV)
+textColor       = input.color(color.rgb(255, 255, 255), "Text Color", group = G_SDV)
+textSize        = input.string("Small", "Text Size", options = ["Auto", "Tiny", "Small", "Normal", "Large", "Huge"], group = G_SDV)
 
-// --- FILTERS --- //
-dhighs          = input.bool(true, "Detect Pivot Highs", group="Detection")
-dlows           = input.bool(true, "Detect Pivot Lows", group="Detection")
-volLen          = input.int(20, "Volume SMA Length", group="Volume Filter")
-volThresh       = input.float(20.0, "Volume Surge Threshold (%)", group="Volume Filter")
+// --- 6 | VOLUME FILTER ---
+volLen    = input.int(20, "Volume SMA Length", minval = 2, group = G_VOL)
+volThresh = input.float(20.0, "Volume Surge Threshold (%)", group = G_VOL)
 
-// --- SCORING & AESTHETICS --- //
-useSimpleScore  = input.bool(false, "Use Scalping Scoring", group="Zone Strength", tooltip="Checked: Extremely reactive. Unchecked: Accuracy-weighted.")
+// --- 7 | SIGNAL ENGINE ---
+sigEnable     = input.bool(true, "Enable Signals", group = G_SIG)
+allowLong     = input.bool(true, "Allow Longs", group = G_SIG)
+allowShort    = input.bool(true, "Allow Shorts", group = G_SIG)
+sigMinTier    = input.string("Strong", "Minimum Zone Tier", options = ["Strong", "Elite"], group = G_SIG)
+sigMinScore   = input.int(55, "Minimum Signal Score (0-100)", minval = 0, maxval = 100, group = G_SIG, tooltip = "v3 default 55 (was 60). Score is recalibrated; see docs.")
+sigMinWick    = input.float(0.30, "Min Rejection Wick (fraction of range)", minval = 0.0, maxval = 1.0, step = 0.05, group = G_SIG)
+sigReqDir     = input.bool(false, "Require Candle Direction", group = G_SIG)
+sigReqVol     = input.bool(false, "Require Volume Surge", group = G_SIG)
+maxSigPerZone = input.int(2, "Max Signals Per Zone", minval = 1, maxval = 10, group = G_SIG)
+sigCooldown   = input.int(6, "Cooldown (Bars)", minval = 0, group = G_SIG)
+maxSigPerDay  = input.int(4, "Max Signals Per Day (UTC)", minval = 1, maxval = 50, group = G_SIG)
+trendMode     = input.string("Soft", "HTF Trend Filter", options = ["Off", "Soft", "Hard"], group = G_SIG)
+trendTF       = input.timeframe("240", "Trend Timeframe", group = G_SIG)
+trendLen      = input.int(50, "Trend EMA Length", minval = 5, group = G_SIG)
+sessionStr    = input.session("0000-2359", "Allowed Session (UTC)", group = G_SIG)
+skipWeekends  = input.bool(false, "Skip Weekends (Sat/Sun UTC)", group = G_SIG)
+// Setup type toggles
+enableZoneReject    = input.bool(true, "Setup: ZONE_REJECT", group = G_SIG)
+enableFlipRetest    = input.bool(true, "Setup: FLIP_RETEST", group = G_SIG)
+enableSweepReclaim  = input.bool(true, "Setup: SWEEP_RECLAIM", group = G_SIG, tooltip = "TEST status — liquidity sweep + reclaim at zone/level.")
+enableDisplacement  = input.bool(false, "Setup: DISPLACEMENT_RETEST", group = G_SIG, tooltip = "TEST status — retest of displacement origin.")
+enableBosRetest     = input.bool(false, "Setup: BOS_RETEST", group = G_SIG, tooltip = "TEST status — retest after break of structure.")
 
-bullBorder      = input.color(color.new(#64b5f6, 60), "Bull Border", group="Pivot Color")
-bearBorder      = input.color(color.new(#ffeb3b, 60), "Bear Border", group="Pivot Color")   
+// --- 8 | RISK MODEL & COSTS ---
+slBufferATR  = input.float(0.50, "SL Buffer (ATR)", minval = 0.0, step = 0.05, group = G_RISK)
+maxRiskATR   = input.float(2.5, "Max Risk (ATR)", minval = 0.3, step = 0.1, group = G_RISK)
+tp1R         = input.float(1.5, "TP1 (R)", minval = 0.2, step = 0.1, group = G_RISK)
+tp2R         = input.float(3.0, "TP2 (R)", minval = 0.5, step = 0.1, group = G_RISK)
+tp1Frac      = input.float(33.0, "Close % At TP1", minval = 10.0, maxval = 100.0, step = 5.0, group = G_RISK)
+tp2Frac      = input.float(33.0, "Close % At TP2", minval = 0.0, maxval = 100.0, step = 5.0, group = G_RISK)
+trailATR     = input.float(1.5, "Trailing Stop (ATR)", minval = 0.5, step = 0.1, group = G_RISK)
+minRoomR     = input.float(2.0, "Min Room To Opposing Zone (R)", minval = 0.0, step = 0.25, group = G_RISK)
+timeStopBars = input.int(60, "Time Stop (Bars)", minval = 5, group = G_RISK)
+feePct       = input.float(0.04, "Fee Per Side (%)", minval = 0.0, step = 0.01, group = G_RISK, tooltip = "Binance Futures taker default 0.04%.")
+slipPct      = input.float(0.02, "Slippage Per Side (%)", minval = 0.0, step = 0.01, group = G_RISK)
+maxCostR     = input.float(0.15, "Max Round-Trip Cost (R)", minval = 0.0, step = 0.05, group = G_RISK, tooltip = "v3 tightened from 0.20 to 0.15.")
+riskPctEq    = input.float(0.5, "Risk Per Trade (% equity)", minval = 0.01, maxval = 5.0, step = 0.05, group = G_RISK)
+sigTtlMult   = input.float(2.0, "Signal TTL (× bar period)", minval = 0.5, step = 0.5, group = G_RISK, tooltip = "Signal expires after this many bar periods.")
 
-// =============================================================== //
-// 🔥 UNIVERSAL ASSET DETECTOR & DYNAMIC MATRIX TUNING (UPGRADED)
-// =============================================================== //
-sym = str.upper(syminfo.ticker)
+// --- 9 | MARKET STRUCTURE ---
+structLen    = input.int(5, "Swing Length", minval = 2, maxval = 20, group = G_STRUCT)
+bosATRMult   = input.float(0.1, "BOS Confirm (ATR beyond swing)", minval = 0.0, step = 0.05, group = G_STRUCT)
+showStructure = input.bool(true, "Show Structure Labels", group = G_STRUCT)
 
-// 1. MACRO
-// Yields, DXY, VIX. Used "US30Y" instead of "US30" to prevent collision with the Dow Jones US30 Index.
-isMacro = str.contains(sym, "US0") or str.contains(sym, "US10") or str.contains(sym, "US20") or str.contains(sym, "US30Y") or str.contains(sym, "DXY") or str.contains(sym, "VIX")
 
-// 2. METALS (GOLD)
-// Gold: "GC" catches GC1! & MGC1!
-isGold = str.contains(sym, "XAU") or str.contains(sym, "GOLD") or str.contains(sym, "GC") or str.contains(sym, "QO")
+// --- FVG logic ---
+bool fvgBull = low > high[2] and close[1] > open[1]
+bool fvgBear = high < low[2] and close[1] < open[1]
 
-// 3. METALS (SILVER)
-// Silver + Copper: Added XCU, HG, QC to Silver as requested. "SI1!" is used instead of "SI" to prevent clashing with Forex pair SIR1!.
-isSilver = str.contains(sym, "XAG") or str.contains(sym, "SIL") or str.contains(sym, "SI1!") or str.contains(sym, "QI") or str.contains(sym, "XCU") or str.contains(sym, "COPPER") or str.contains(sym, "HG") or str.contains(sym, "QC")
+// --- 10 | LIQUIDITY ENGINE ---
+eqTol       = input.float(0.15, "Equal High/Low Tolerance (ATR)", minval = 0.01, step = 0.05, group = G_LIQ)
+sweepMinATR = input.float(0.05, "Min Sweep Depth (ATR)", minval = 0.01, step = 0.01, group = G_LIQ)
+reclaimBars = input.int(3, "Max Reclaim Bars", minval = 1, maxval = 10, group = G_LIQ)
+showSweeps  = input.bool(true, "Show Sweep Labels", group = G_LIQ)
 
-// 4. ENERGY
-// CL catches CL1! & MCL1!. NG catches NG1! & MNG1!. 
-isEnergy = str.contains(sym, "WTI") or str.contains(sym, "XTI") or str.contains(sym, "USOIL") or str.contains(sym, "CRUDE") or str.contains(sym, "XBR") or str.contains(sym, "BCO") or str.contains(sym, "BRENT") or str.contains(sym, "UKOIL") or str.contains(sym, "CL") or str.contains(sym, "QM") or str.contains(sym, "NG") or str.contains(sym, "BZ") or str.contains(sym, "BB") or str.contains(sym, "MBC") or str.contains(sym, "CY") 
+// --- 11 | REGIME ENGINE ---
+regimeATRPeriod = input.int(500, "ATR Percentile Window", minval = 50, group = G_REG)
+regimeVolHi     = input.float(75.0, "High Vol Percentile", minval = 50.0, maxval = 99.0, group = G_REG)
+regimeVolLo     = input.float(25.0, "Low Vol Percentile", minval = 1.0, maxval = 50.0, group = G_REG)
+regimeTrendFlat = input.float(0.25, "Trend Flat Band (ATR)", minval = 0.0, step = 0.05, group = G_REG)
 
-// 5. CRYPTO
-// Base tickers cover all variations (e.g., "BTC" covers BTCUSDT, BTCUSD, BTC1!. "MBT" covers MBT1!)
-isCrypto = syminfo.type == "crypto" or str.contains(sym, "BTC") or str.contains(sym, "MBT") or str.contains(sym, "ETH") or str.contains(sym, "MET") or str.contains(sym, "SOL") or str.contains(sym, "MSL") or str.contains(sym, "XRP") or str.contains(sym, "MXP") or str.contains(sym, "BNB")
+// --- 12 | ALERTS / WEBHOOK ---
+alertPass    = input.string("CHANGE_ME", "Webhook Passphrase", group = G_ALR, tooltip = "Used in alert() JSON only. NOT placed in alertcondition() messages.")
+strategyName = input.string("ASR_v3", "Strategy Name", group = G_ALR)
+exchangeName = input.string("BINANCE", "Exchange Tag", group = G_ALR)
+sendExit     = input.bool(true, "Send EXIT Alerts", group = G_ALR)
+hbEnable     = input.bool(false, "Send HEARTBEAT Alerts", group = G_ALR)
+hbBars       = input.int(15, "Heartbeat Every N Bars", minval = 1, group = G_ALR)
 
-// 6. INDICES
-// Compressed base tickers: ES catches ES1!/MES1!, NQ catches NQ1!/MNQ1!, YM catches YM1!/MYM1!
-isIndex = syminfo.type == "index" or str.contains(sym, "SPX") or str.contains(sym, "SP500") or str.contains(sym, "US500") or str.contains(sym, "NAS") or str.contains(sym, "NDX") or str.contains(sym, "NDQ") or str.contains(sym, "USTEC") or str.contains(sym, "DJI") or str.contains(sym, "US30") or str.contains(sym, "DAX") or str.contains(sym, "DE40") or str.contains(sym, "UK100") or str.contains(sym, "JP225") or str.contains(sym, "NIFTY") or str.contains(sym, "SENSEX") or str.contains(sym, "ES") or str.contains(sym, "NQ") or str.contains(sym, "YM") or str.contains(sym, "RTY") or str.contains(sym, "M2K") or str.contains(sym, "FDX") or str.contains(sym, "FESX") or str.contains(sym, "FSXE") or str.contains(sym, "FTUK") or str.contains(sym, "NKD") or str.contains(sym, "MNK")
+// --- 13 | DASHBOARD & VISUALS ---
+showDash   = input.bool(true, "Show Dashboard", group = G_UI)
+dashPos    = input.string("Top Right", "Dashboard Position", options = ["Top Left", "Top Right", "Middle Right", "Bottom Left", "Bottom Right"], group = G_UI)
+showTrades = input.bool(true, "Show Trade Boxes & Labels", group = G_UI)
+keepTrades = input.int(15, "Trades To Keep On Chart", minval = 1, maxval = 60, group = G_UI)
+showHtfEma = input.bool(true, "Show HTF Trend EMA", group = G_UI)
+showVwap   = input.bool(false, "Show Session VWAP", group = G_UI, tooltip = "UTC-day VWAP. TEST feature.")
+maxRetired = input.int(15, "Max Retired Zone Boxes", minval = 0, maxval = 50, group = G_UI, tooltip = "BUG-21 fix: cap retained history boxes.")
 
-// 7. FOREX
-// Spot Forex
-isSpotForex = str.contains(sym, "USD") or str.contains(sym, "EUR") or str.contains(sym, "GBP") or str.contains(sym, "JPY") or str.contains(sym, "AUD") or str.contains(sym, "CAD") or str.contains(sym, "CHF") or str.contains(sym, "NZD") or str.contains(sym, "INR")
-// CME Futures (e.g., 6E catches 6E1! & M6E1!)
-isCMEForex = str.contains(sym, "6E") or str.contains(sym, "6J") or str.contains(sym, "6B") or str.contains(sym, "6S") or str.contains(sym, "6A") or str.contains(sym, "6C") or str.contains(sym, "6N") or str.contains(sym, "MJY") or str.contains(sym, "MSF") or str.contains(sym, "MCD") or str.contains(sym, "SIR") or str.contains(sym, "MIR")
+// ============================================================================================
+// BUG-16 FIX: Validate TP ordering at load
+// ============================================================================================
+var bool _tpValid = tp2R > tp1R
+if barstate.isfirst and not _tpValid
+    runtime.error("TP2 (" + str.tostring(tp2R) + ") must be greater than TP1 (" + str.tostring(tp1R) + ")")
 
-isForex = syminfo.type == "forex" or isCMEForex or isSpotForex
+// ============================================================================================
+// BUG-18 FIX: Block HTF below chart timeframe
+// ============================================================================================
+chartSec   = timeframe.in_seconds()
+htfSec     = timeframe.in_seconds(htfRes)
+trendSec   = timeframe.in_seconds(trendTF)
+if barstate.isfirst and (htfSec < chartSec or trendSec < chartSec)
+    runtime.error("HTF / Trend timeframe must be >= chart timeframe")
 
-// 8. OVERRIDE / FILTER
-// Prevent assets containing "USD" (like BTCUSD, USOIL, XAUUSD) from being incorrectly flagged as Forex.
-if isMacro or isGold or isSilver or isEnergy or isCrypto or isIndex
-    isForex := false
+// ============================================================================================
+// ASSET DETECTOR  (BUG-19 style: robust, with user override)
+// ============================================================================================
+f_isFxPair(string s) =>
+    bool ok = false
+    if str.length(s) == 6
+        array<string> ccy = array.from("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "INR", "SEK", "NOK", "DKK", "SGD", "HKD", "MXN", "ZAR", "TRY", "PLN", "CNH")
+        ok := array.includes(ccy, str.substring(s, 0, 3)) and array.includes(ccy, str.substring(s, 3, 6))
+    ok
 
-// FINAL ASSIGNMENT (Ordered by Priority)
-assetType = isMacro ? "MACRO" : isGold ? "GOLD" : isSilver ? "SILVER" : isEnergy ? "ENERGY" : isCrypto ? "CRYPTO" : isIndex ? "INDEX" : isForex ? "FOREX" : "OTHER"
+f_hasPrefix(string s, array<string> prefixes) =>
+    bool hit = false
+    for p in prefixes
+        if str.startswith(s, p)
+            hit := true
+            break
+    hit
 
-g_decay = 600, g_mom = 0.50, g_nPiv = 8 
-s_decay = 650, s_mom = 0.45, s_nPiv = 8 
-c_decay = 500, c_mom = 0.50, c_nPiv = 8 
-f_decay = 900, f_mom = 0.40, f_nPiv = 10 
-i_decay = 700, i_mom = 0.45, i_nPiv = 10 
-e_decay = 800, e_mom = 0.45, e_nPiv = 10
-avg_decay = 700, avg_mom = 0.50, avg_nPiv = 10 
+f_detectAsset() =>
+    string tkr = str.upper(syminfo.ticker)
+    string rt  = str.upper(syminfo.root)
+    string bc  = na(syminfo.basecurrency) ? "" : str.upper(syminfo.basecurrency)
+    string ty  = syminfo.type
+    bool nonEq = ty != "stock" and ty != "fund" and ty != "dr" and ty != "right" and ty != "warrant" and ty != "structured"
+    array<string> cryptoRoots  = array.from("BTC", "MBT", "ETH", "MET", "SOL", "MSL", "XRP", "MXP", "BNB", "DOGE", "ADA", "LTC", "BCH", "DOT", "AVAX", "LINK", "MATIC", "TRX", "SHIB", "UNI", "ATOM", "XLM", "ETC", "NEAR", "APT", "ARB", "OP", "SUI", "TON", "PEPE", "INJ", "FIL", "AAVE")
+    array<string> cryptoPrefix = array.from("BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "LTC", "BCH", "AVAX", "LINK", "MATIC", "TRX", "SHIB", "XLM")
+    array<string> macroRoots   = array.from("DXY", "VIX", "US02Y", "US03Y", "US05Y", "US10Y", "US20Y", "US30Y", "TNX", "TYX", "FVX", "IRX")
+    array<string> goldRoots    = array.from("GC", "MGC", "QO", "GOLD")
+    array<string> silverRoots  = array.from("SI", "SIL", "QI", "HG", "MHG", "QC", "COPPER", "XCU")
+    array<string> energyRoots  = array.from("CL", "MCL", "QM", "NG", "MNG", "QG", "BZ", "BB", "MBC", "CY", "RB", "HO")
+    array<string> energyPrefix = array.from("XTI", "XBR", "USOIL", "UKOIL", "WTI", "BRENT", "BCO", "CRUDE")
+    array<string> indexRoots   = array.from("ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K", "NKD", "MNK", "FDAX", "FDXM", "FDXS", "FESX", "FSXE", "FTUK", "SPX", "SP500", "US500", "NAS100", "NDX", "NDQ", "USTEC", "US100", "DJI", "US30", "DJ30", "DAX", "DE40", "GER40", "GER30", "UK100", "JP225", "NI225", "HK50", "NIFTY", "BANKNIFTY", "SENSEX")
+    array<string> cmeFxRoots   = array.from("6E", "6J", "6B", "6S", "6A", "6C", "6N", "M6E", "M6A", "M6B", "MJY", "MSF", "MCD", "SIR", "MIR")
+    string res = "OTHER"
+    if ty == "crypto" or (nonEq and (array.includes(cryptoRoots, rt) or array.includes(cryptoRoots, bc) or f_hasPrefix(tkr, cryptoPrefix)))
+        res := "CRYPTO"
+    else if array.includes(macroRoots, rt) or array.includes(macroRoots, tkr)
+        res := "MACRO"
+    else if array.includes(goldRoots, rt) or f_hasPrefix(tkr, array.from("XAU", "GOLD"))
+        res := "GOLD"
+    else if array.includes(silverRoots, rt) or f_hasPrefix(tkr, array.from("XAG", "XCU"))
+        res := "SILVER"
+    else if array.includes(energyRoots, rt) or f_hasPrefix(tkr, energyPrefix)
+        res := "ENERGY"
+    else if ty == "index" or array.includes(indexRoots, rt) or array.includes(indexRoots, tkr)
+        res := "INDEX"
+    else if ty == "forex" or array.includes(cmeFxRoots, rt) or f_isFxPair(tkr)
+        res := "FOREX"
+    res
 
-var int dyn_decayFactor = useAutoAsset ? (assetType == "GOLD" ? g_decay : assetType == "SILVER" ? s_decay : assetType == "CRYPTO" ? c_decay : assetType == "FOREX" ? f_decay : assetType == "INDEX" ? i_decay : assetType == "ENERGY" ? e_decay : avg_decay) : decayFactor
-var float dyn_momentumBodyMult = useAutoAsset ? (assetType == "GOLD" ? g_mom : assetType == "SILVER" ? s_mom : assetType == "CRYPTO" ? c_mom : assetType == "FOREX" ? f_mom : assetType == "INDEX" ? i_mom : assetType == "ENERGY" ? e_mom : avg_mom) : momentumBodyMult
-var int dyn_nPiv = useAutoAsset ? (assetType == "GOLD" ? g_nPiv : assetType == "SILVER" ? s_nPiv : assetType == "CRYPTO" ? c_nPiv : assetType == "FOREX" ? f_nPiv : assetType == "INDEX" ? i_nPiv : assetType == "ENERGY" ? e_nPiv : avg_nPiv) : nPiv
+f_detectMarket() =>
+    string ty = syminfo.type
+    string tkr = str.upper(syminfo.ticker)
+    string res = "OTHER"
+    if ty == "crypto"
+        res := str.contains(tkr, "PERP") or str.contains(tkr, ".P") or str.endswith(tkr, "USDT") ? "PERPETUAL" : "SPOT"
+    else if ty == "forex"
+        res := "FOREX"
+    else if ty == "futures"
+        res := "FUTURES"
+    else if ty == "cfd"
+        res := "CFD"
+    else if ty == "stock" or ty == "fund" or ty == "dr"
+        res := "SPOT"
+    res
 
-// ================================================================================================= //
-// ===================================== v6 UDT & VARIABLES ======================================== //
-// ================================================================================================= //
+var string assetType  = assetOverride != "Auto" ? assetOverride : f_detectAsset()
+var string marketType = marketOverride != "Auto" ? marketOverride : f_detectMarket()
+var bool   isSpot     = marketType == "SPOT"
+
+// ============================================================================================
+// ASSET AUTO-TUNE PARAMETERS
+// ============================================================================================
+int   p_decay = 700
+float p_mom   = 0.50
+int   p_nPiv  = 10
+float p_space = 0.40
+if assetType == "GOLD"
+    p_decay := 600
+    p_nPiv  := 8
+else if assetType == "SILVER"
+    p_decay := 650
+    p_mom   := 0.45
+    p_nPiv  := 8
+else if assetType == "CRYPTO"
+    p_decay := 500
+    p_nPiv  := 8
+    p_space := 0.30
+else if assetType == "FOREX"
+    p_decay := 900
+    p_mom   := 0.40
+    p_space := 0.50
+else if assetType == "INDEX"
+    p_mom   := 0.45
+else if assetType == "ENERGY"
+    p_decay := 800
+    p_mom   := 0.45
+
+int   dyn_decay = useAutoAsset ? p_decay : decayFactor
+float dyn_mom   = useAutoAsset ? p_mom : momentumBodyMult
+int   dyn_nPiv  = useAutoAsset ? p_nPiv : nPiv
+float dyn_space = p_space
+
+// ============================================================================================
+// TYPES & PERSISTENT COLLECTIONS
+// ============================================================================================
+// Zone status constants
+var int Z_CREATED     = 0
+var int Z_QUALIFYING  = 1
+var int Z_ACTIVE      = 2
+var int Z_RETESTED    = 3
+var int Z_DEGRADED    = 4
+var int Z_FLIPPED     = 5
+var int Z_INVALIDATED = 6
+var int Z_EXPIRED     = 7
+
+// Setup type constants
+var int S_ZONE_REJECT   = 1
+var int S_FLIP_RETEST   = 2
+var int S_SWEEP_RECLAIM = 3
+var int S_DISP_RETEST   = 4
+var int S_BOS_RETEST    = 5
+
+// Exit reason constants
+var int X_STOP_LOSS    = 1
+var int X_BE_AFTER_TP1 = 2
+var int X_TP2          = 3
+var int X_TIME_STOP    = 4
+var int X_TRAIL_EXIT   = 5
 
 type zoneObj
     float top
