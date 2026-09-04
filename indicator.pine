@@ -844,13 +844,79 @@ f_addZone(bool doAdd, bool isBullZone, float pivotPx, bool fvgConf, float depStr
                     tooClose := true
                     break
 
-            // 🟢 AGE CLEANUP (Deletes weak old zones)
-            if age > maxZoneAge
-                if keepHistory and isElite
-                    z.retireVis() 
-                else
-                    z.deleteVis()
-                array.remove(arr, i)
+            if not tooClose
+                // MATH-03/04 fix: displacement-based filter replaces near-vacuous momentum count
+                float pivotBody = impulseR
+                float pivotATR = nz(atr[pivR])
+                bool hasDisplacement = pivotATR > 0 and pivotBody / pivotATR >= displacementMult * dyn_mom
+                bool hasVol = hasVolData and volR > avgVolR * 1.5
+                bool strongMove = isBullZone ? bullMomentum >= momentumCount : bearMomentum >= momentumCount
+
+                if strongMove and (hasDisplacement or hasVol)
+                    // Count bull/bear zones separately for capacity
+                    int sameCount = 0
+                    for ez in zones
+                        if ez.isBull == isBullZone
+                            sameCount += 1
+                    if sameCount >= dyn_nPiv
+                        // Drop weakest same-polarity zone
+                        int wi = -1
+                        float ws = 999999.0
+                        for i = 0 to zones.size() - 1
+                            zoneObj zt = zones.get(i)
+                            if zt.isBull == isBullZone and zt.qualityScore < ws
+                                ws := zt.qualityScore
+                                wi := i
+                        if wi >= 0
+                            zoneObj zd = zones.get(wi)
+                            zd.deleteVis()
+                            zones.remove(wi)
+
+                    int hB = f_htfConf(isBullZone, zT, zB, htfTol) ? 2 : 0
+                    bool pdwC = f_pdwConf(zT, zB, htfTol)
+                    int vQ = volState
+                    float disp = pivotATR > 0 ? pivotBody / pivotATR : 0.0
+
+                    nextZoneIdArr.set(0, nextZoneIdArr.get(0) + 1)
+                    zoneObj newZ = zoneObj.new(
+                         id = nextZoneIdArr.get(0),
+                         top = zT, btm = zB, isBull = isBullZone,
+                         birthBar = bar_index,   // BUG-05 fix: confirmation time
+                         birthTime = time,
+                         touches = 0,            // BUG-08/12 fix: starts at 0, not 1
+                         qualTouches = 0,
+                         lastTouchTime = 0,
+                         maxReaction = 0.0,      // BUG-04 fix: no pre-loaded reaction
+                         reactionEarned = false,
+                         reactionSpeed = 0,
+                         displacement = disp,
+                         volQuality = vQ,
+                         htfBonus = hB,
+                         mtfConf = false,
+                         pdwConf = pdwC,
+                         failedBreaks = 0,
+                         flipped = false,
+                         flipBar = 0,
+                         flipQuality = 0.0,
+                         tier = 0,
+                         qualityScore = 0.0,
+                         lastSigBar = 0,
+                         sigCount = 0,
+                         status = Z_CREATED,
+                         freshness = 100)
+                    zones.push(newZ)
+        true
+
+// ============================================================================================
+// ZONE LIFECYCLE ENGINE  (confirmed bars only)
+// ============================================================================================
+processZones() =>
+    if zones.size() > 0 and insideLookback
+        float invH = invalidation == "Close" ? close : high
+        float invL = invalidation == "Close" ? close : low
+
+        for i = zones.size() - 1 to 0
+            if i >= zones.size()
                 continue
             
             invH = invalidation == "Close" ? close : high
