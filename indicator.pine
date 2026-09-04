@@ -918,37 +918,75 @@ processZones() =>
         for i = zones.size() - 1 to 0
             if i >= zones.size()
                 continue
-            
-            invH = invalidation == "Close" ? close : high
-            invL = invalidation == "Close" ? close : low
-            isBrokenUp = invH > z.top and not z.isBull
-            isBrokenDn = invL < z.btm and z.isBull
-            
-            // 🟢 TOUCH LIMIT REMOVED (Institutions tap levels multiple times)
-            isTouch = z.isBull ? (low <= z.top and close > z.top and isBullWick) : (high >= z.btm and close < z.btm and isBearWick)
-            if isTouch
-                if time - z.lastTouchTime > curTFMS * 5 // Maintained 5-bar cooldown constraint for core zone memory
+            zoneObj z = zones.get(i)
+            int age = bar_index - z.birthBar
+
+            // --- Lifecycle: CREATED → QUALIFYING ---
+            if z.status == Z_CREATED
+                z.status := Z_QUALIFYING
+
+            // --- Lifecycle: QUALIFYING → ACTIVE ---
+            if z.status == Z_QUALIFYING and age >= minZoneDuration
+                z.status := Z_ACTIVE
+
+            // --- Freshness decay — BUG-06 fix: continuous, affects scoring ---
+            z.freshness := math.max(0, 100 - math.round(age * 100.0 / (dyn_decay * 2.0)))
+
+            // --- Touch detection (BUG-12 fix: record state BEFORE scoring) ---
+            bool isTouch = false
+            if z.status >= Z_ACTIVE
+                isTouch := z.isBull ? (low <= z.top and close > z.top and isBullWick) : (high >= z.btm and close < z.btm and isBearWick)
+                if isTouch and (time - z.lastTouchTime > curTFMS * 5)
                     z.touches += 1
+                    float wickF = candleRange > 0 ? (z.isBull ? lowerWick : upperWick) / candleRange : 0.0
+                    if wickF >= sigMinWick
+                        z.qualTouches += 1
                     z.lastTouchTime := time
-                    z.maxReaction := z.isBull ? high : low
+                    z.maxReaction := 0.0           // BUG-04 fix: reset reaction on each touch
+                    z.reactionEarned := false
+                    z.reactionSpeed := 0
+                    if z.status == Z_ACTIVE
+                        z.status := Z_RETESTED
 
-            if not isTouch
-                if z.isBull and high > z.maxReaction
-                    z.maxReaction := high
-                if not z.isBull and low < z.maxReaction
-                    z.maxReaction := low
-            
-            // 🟢 FASTER REACTION BONUS
-            reactionMove = math.abs(z.maxReaction - (z.isBull ? z.top : z.btm))
-            if reactionMove > atr * 1.2
-                z.reactionBonus := math.max(z.reactionBonus, 1)
+            // --- Reaction tracking (BUG-04 fix: post-touch only) ---
+            if z.touches > 0 and z.status >= Z_ACTIVE
+                if z.isBull
+                    if high > z.top + z.maxReaction
+                        z.maxReaction := high - z.top
+                else
+                    if low < z.btm - z.maxReaction
+                        z.maxReaction := z.btm - low
+                if not z.reactionEarned and not na(atr) and atr > 0 and z.maxReaction > atr * 1.2
+                    z.reactionEarned := true
+                    z.reactionSpeed := bar_index - z.lastTouchTime
 
-            decay = math.floor(age / dyn_decayFactor)
-            finalStrength = zoneScore - decay
+            // --- HTF / MTF / PDW confluence refresh ---
+            if z.htfBonus == 0 and f_htfConf(z.isBull, z.top, z.btm, htfTol)
+                z.htfBonus := 2
+            z.mtfConf := f_mtfOverlap(z.isBull, z.top, z.btm)
+            z.pdwConf := f_pdwConf(z.top, z.btm, htfTol)
 
-            if finalStrength <= 0
-                z.deleteVis() 
-                array.remove(arr, i)
+            // --- Quality score & tier (uses state BEFORE this bar's signal scan) ---
+            z.qualityScore := f_calcQualityScore(z, atr)
+            int prevTier = z.tier
+            z.tier := f_tier(z.qualityScore)
+
+            // --- Degradation ---
+            if z.status >= Z_ACTIVE and z.status != Z_FLIPPED and z.tier == 0
+                z.status := Z_DEGRADED
+
+            // --- Un-degrade if score recovers ---
+            if z.status == Z_DEGRADED and z.tier >= 1
+                z.status := Z_ACTIVE
+
+            // --- Expiry ---
+            if age > dyn_decay * 2
+                if keepHistory and prevTier == 2 and retiredCountArr.get(0) < maxRetired
+                    z.retireVis()
+                else
+                    z.deleteVis()
+                z.status := Z_EXPIRED
+                zones.remove(i)
                 continue
 
             // --- SMC POLARITY FLIP & BREAKOUT FIX (SMART VALIDATION) ---
