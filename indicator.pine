@@ -1505,20 +1505,355 @@ if confirmed and tOpen
             xType := X_STOP_LOSS
         xGross := tRealR + remF * (tDir * (tSL - tEntry) / tRisk)
     else
-        box.set_right(currentBox, momentCTD)
-        i_d += 1
+        // Step 2: Check TP1
+        if not tTP1Hit and tp1Reached
+            tRealR += tp1F * tp1R
+            tTP1Hit := true
+            tSL := tEntry    // Move stop to BE
+            remF := tp2F + tp3F
+            // BUG-03 fix: SAME-BAR RECHECK of the new BE stop
+            bool beHitSameBar = tDir == 1 ? low <= tEntry : high >= tEntry
+            if beHitSameBar
+                closeOut := true
+                xPx := tEntry
+                xWhy := "BE"
+                xType := X_BE_AFTER_TP1
+                xGross := tRealR   // partial already banked
 
+        // Step 3: Check TP2
+        if not closeOut and tTP1Hit and not tTP2Hit and tp2Reached
+            tRealR += tp2F * tp2R
+            tTP2Hit := true
+            // FIX-5: Activate trailing stop on the remaining tp3_frac
+            if tp3F > 0.001
+                tTrailAct := true
+                tBestClose := close
+                tTrailStop := tTP1
+            else
+                closeOut := true
+                xPx := tTP2
+                xWhy := "TP2"
+                xType := X_TP2
+                xGross := tRealR
 
-// ================================== //
-// ------> Conditional Displays <---- //
-// ================================== //
+        // Update trailing stop if active
+        if not closeOut and tTrailAct and atr > 0
+            if tDir == 1
+                float newTrail = close - trailATR * atr
+                if na(tTrailStop) or newTrail > tTrailStop
+                    tTrailStop := newTrail
+                if na(tBestClose) or close > tBestClose
+                    tBestClose := close
+            else
+                float newTrail = close + trailATR * atr
+                if na(tTrailStop) or newTrail < tTrailStop
+                    tTrailStop := newTrail
+                if na(tBestClose) or close < tBestClose
+                    tBestClose := close
 
-// Add Previous Day / Week Levels 
-pdh = request.security(syminfo.tickerid, "D", high[1], lookahead = barmerge.lookahead_on)
-pdl = request.security(syminfo.tickerid, "D", low[1],  lookahead = barmerge.lookahead_on)
-pwh = request.security(syminfo.tickerid, "W", high[1], lookahead = barmerge.lookahead_on)
-pwl = request.security(syminfo.tickerid, "W", low[1],  lookahead = barmerge.lookahead_on)
+        // Step 4: Time stop
+        if not closeOut and tBars >= timeStopBars
+            closeOut := true
+            xPx := close
+            xWhy := "TIME"
+            xType := X_TIME_STOP
+            xGross := tRealR + remF * (tDir * (close - tEntry) / tRisk)
 
+    if closeOut
+        float netR = xGross - tCostR
+        exitEvt := true
+        exitReason := xWhy
+        exitNetR := netR
+        exitGrossR := xGross
+        exitPx := xPx
+        exitBars := tBars
+        exitId := tId
+        exitSide := tSide
+
+        // BUG-01 fix: separate accounting
+        stTrades += 1
+        if xType == X_STOP_LOSS
+            stLosses += 1
+            stSumLoss += netR
+            stLossStreak += 1
+            stMaxLossStreak := math.max(stMaxLossStreak, stLossStreak)
+        else if xType == X_BE_AFTER_TP1
+            stBE += 1
+            stSumBE += netR
+            stLossStreak := 0
+        else if xType == X_TP2 or xType == X_TRAIL_EXIT
+            stWins += 1
+            stSumWin += netR
+            stLossStreak := 0
+        else if xType == X_TIME_STOP
+            stTimeExit += 1
+            if netR > 0.1
+                stSumWin += netR
+                stWins += 1
+            else if netR < -0.1
+                stSumLoss += netR
+                stLosses += 1
+            else
+                stSumBE += netR
+                stBE += 1
+            stLossStreak := netR < 0 ? stLossStreak + 1 : 0
+            stMaxLossStreak := math.max(stMaxLossStreak, stLossStreak)
+
+        stNetR += netR
+        stPeak := math.max(stPeak, stNetR)
+        stMaxDD := math.max(stMaxDD, stPeak - stNetR)
+        tOpen := false
+
+        if tVis.size() > 0
+            tradeVis tvx = tVis.last()
+            box.set_right(tvx.rb, bar_index)
+            box.set_right(tvx.gb, bar_index)
+            line.set_x2(tvx.l1, bar_index)
+            label.set_text(tvx.lb, tvx.tag + " " + (netR > 0 ? "+" : "") + str.tostring(netR, "#.##") + "R " + xWhy)
+    else
+        if tVis.size() > 0
+            tradeVis tvo = tVis.last()
+            box.set_right(tvo.rb, bar_index + 1)
+            box.set_right(tvo.gb, bar_index + 1)
+            line.set_x2(tvo.l1, bar_index + 1)
+
+// ---- 2) BUG-20 fix: day bookkeeping uses bar CLOSE time ----
+int dayKey = year(time_close, "UTC") * 10000 + month(time_close, "UTC") * 100 + dayofmonth(time_close, "UTC")
+if confirmed and dayKey != sigDayKey
+    sigDayKey := dayKey
+    sigsToday := 0
+
+// BUG-20 fix: session check uses time_close
+sessTime = time(timeframe.period, sessionStr, "UTC")
+bool inSession = sessionStr == "0000-2359" or not na(sessTime)
+bool wkdBlock  = skipWeekends and (dayofweek(time_close, "UTC") == dayofweek.saturday or dayofweek(time_close, "UTC") == dayofweek.sunday)
+bool cdOK      = bar_index - lastSigBarIdx >= sigCooldown
+// Spot short block
+bool shortAllowed = allowShort and not isSpot
+bool sigOK     = confirmed and insideLookback and sigEnable and inSession and not wkdBlock and cdOK and sigsToday < maxSigPerDay and not tOpen and not na(atr) and atr > 0
+
+// BUG-15 fix: compute feasibility band and warn
+float minRiskPct = 2.0 * (feePct + slipPct) / maxCostR
+float maxRiskPct = maxRiskATR * atrPct / 100.0
+bool feasible = maxRiskPct > 0 and minRiskPct < maxRiskPct
+
+// ---- 3) BUG-14 fix: process EXIT before ENTRY on same bar ----
+// (exitEvt is set above; entryEvt will be set below. Alert emission order fixed later.)
+
+// ---- 4) scan zones, score, apply risk gates, fire ----
+if sigOK and feasible
+    sigCand cL = sigCand.new()
+    sigCand cS = sigCand.new()
+    if allowLong
+        cL := f_scanZones(true, cL)
+    if shortAllowed
+        cS := f_scanZones(false, cS)
+
+    bool haveL = not na(cL.z)
+    bool haveS = not na(cS.z)
+    int pickDir = 0
+    if haveL and haveS
+        pickDir := cL.score >= cS.score ? 1 : -1
+    else if haveL
+        pickDir := 1
+    else if haveS
+        pickDir := -1
+
+    if pickDir != 0
+        sigCand pc = pickDir == 1 ? cL : cS
+        zoneObj pz = pc.z
+        float en = close
+        float slp = pickDir == 1 ? math.min(pz.btm, low) - slBufferATR * atr : math.max(pz.top, high) + slBufferATR * atr
+        float rk = math.abs(en - slp)
+        bool riskOK = rk > 0 and rk <= maxRiskATR * atr
+        float oppLvl = f_oppIn(pickDir == 1, en)
+        bool roomOK = na(oppLvl) or math.abs(oppLvl - en) >= minRoomR * rk
+        float rpx = rk / en * 100.0
+        float cr = rpx > 0 ? 2.0 * (feePct + slipPct) / rpx : 99.0
+        bool costOK = cr <= maxCostR
+
+        if riskOK and roomOK and costOK
+            float t1 = en + pickDir * tp1R * rk
+            float t2 = en + pickDir * tp2R * rk
+            string sideTxt = pickDir == 1 ? "LONG" : "SHORT"
+            string typeTxt = f_setupName(pc.setupType)
+            string gradeTxt = pc.score >= 80 ? "A" : pc.score >= 65 ? "B" : "C"
+            seqNum += 1
+            string idv = syminfo.ticker + "_" + timeframe.period + "_" + str.tostring(time) + "_" + sideTxt
+            string evtId = idv + "_" + str.tostring(seqNum)
+            string why = typeTxt + " " + (pz.tier == 2 ? "Elite" : "Strong") + " Q" + str.tostring(math.round(pz.qualityScore)) + (pc.htfC ? " +HTF" : "") + (pc.mtfC ? " +MTF" : "") + " t=" + str.tostring(pz.touches) + " w=" + str.tostring(pc.wickF, "#.##")
+
+            tOpen := true
+            tDir := pickDir
+            tEntry := en
+            tSL := slp
+            tTP1 := t1
+            tTP2 := t2
+            tRisk := rk
+            tCostR := cr
+            tTP1Hit := false
+            tRealR := 0.0
+            tBars := 0
+            tId := idv
+            tSide := sideTxt
+            tSetup := pc.setupType
+            sigsToday += 1
+            lastSigBarIdx := bar_index
+            lastSigText := sideTxt + " " + gradeTxt + str.tostring(math.round(pc.score)) + " " + typeTxt + " @ " + str.tostring(en, format.mintick)
+            pz.sigCount += 1
+            pz.lastSigBar := bar_index
+            entryEvt := true
+            longSig := pickDir == 1
+            shortSig := pickDir == -1
+            entryJson := f_jsonEntry(idv, evtId, sideTxt, typeTxt, pc.score, gradeTxt, en, slp, t1, t2, rpx, why, pc)
+
+            if showTrades
+                color lc = pickDir == 1 ? color.new(#00c853, 0) : color.new(#ff1744, 0)
+                string tagTxt = (pz.flipped ? "FLIP " : "") + (pickDir == 1 ? "BUY " : "SELL ") + gradeTxt + str.tostring(math.round(pc.score)) + " " + f_setupName(pc.setupType)
+                label lbn = label.new(bar_index, pickDir == 1 ? low : high, tagTxt, style = pickDir == 1 ? label.style_label_up : label.style_label_down, color = lc, textcolor = color.white, size = size.small)
+                float rTop = pickDir == 1 ? en : slp
+                float rBot = pickDir == 1 ? slp : en
+                float gTop = pickDir == 1 ? t2 : en
+                float gBot = pickDir == 1 ? en : t2
+                box rbx = box.new(bar_index, rTop, bar_index + 1, rBot, border_color = na, bgcolor = color.new(#ff1744, 82))
+                box gbx = box.new(bar_index, gTop, bar_index + 1, gBot, border_color = na, bgcolor = color.new(#00c853, 82))
+                line l1x = line.new(bar_index, t1, bar_index + 1, t1, color = color.new(#00c853, 20), style = line.style_dotted, width = 1)
+                tVis.push(tradeVis.new(rbx, gbx, l1x, lbn, pickDir, tagTxt))
+                if tVis.size() > keepTrades
+                    tradeVis oldTv = tVis.shift()
+                    box.delete(oldTv.rb)
+                    box.delete(oldTv.gb)
+                    line.delete(oldTv.l1)
+                    label.delete(oldTv.lb)
+
+// ============================================================================================
+// ALERTS  (BUG-14 fix: EXIT emitted before ENTRY; BUG-22 fix: one contract, versioned)
+// ============================================================================================
+if exitEvt and sendExit
+    alert(f_jsonExit(exitId, exitSide, exitReason, exitNetR, exitGrossR, exitPx, exitBars), alert.freq_once_per_bar_close)
+if entryEvt
+    alert(entryJson, alert.freq_once_per_bar_close)
+if hbEnable and confirmed and bar_index % hbBars == 0
+    alert(f_jsonHb(tOpen), alert.freq_once_per_bar_close)
+
+// BUG-22 fix: alertcondition messages clearly marked as NON-AUTHENTICATED
+alertcondition(longSig, title = "ASR v3 Long (non-auth)", message = '{"v":3,"event":"ENTRY","side":"LONG","symbol":"{{ticker}}","tf":"{{interval}}","price":{{close}},"ts":{{timenow}},"auth":"NONE"}')
+alertcondition(shortSig, title = "ASR v3 Short (non-auth)", message = '{"v":3,"event":"ENTRY","side":"SHORT","symbol":"{{ticker}}","tf":"{{interval}}","price":{{close}},"ts":{{timenow}},"auth":"NONE"}')
+alertcondition(exitEvt, title = "ASR v3 Exit (non-auth)", message = '{"v":3,"event":"EXIT","symbol":"{{ticker}}","tf":"{{interval}}","price":{{close}},"ts":{{timenow}},"auth":"NONE"}')
+
+// ============================================================================================
+// PLOTS
+// ============================================================================================
+plot(showHtfEma and trendMode != "Off" ? tEma : na, "HTF Trend EMA", color = color.new(color.orange, 30), linewidth = 1, style = plot.style_stepline)
+plot(showVwap and hasVolData ? vwapVal : na, "Session VWAP", color = color.new(color.purple, 40), linewidth = 1, style = plot.style_stepline)
+
+// ============================================================================================
+// DASHBOARD  (BUG-01/02 fix: separate WIN/LOSS/BE/TIME, expectancy, feasibility)
+// ============================================================================================
+f_row(table t, int r, string k, string v, color vc) =>
+    table.cell(t, 0, r, k, text_color = color.new(color.white, 25), text_halign = text.align_left, text_size = size.small, bgcolor = color.new(#161b22, 0))
+    table.cell(t, 1, r, v, text_color = vc, text_halign = text.align_right, text_size = size.small, bgcolor = color.new(#0d1117, 0))
+    true
+
+f_zoneStats(float px, float a) =>
+    int dEl = 0
+    int dSt = 0
+    int sEl = 0
+    int sSt = 0
+    float nDem = na
+    float nSup = na
+    for z in zones
+        if z.tier >= 1 and z.status >= Z_ACTIVE and z.status <= Z_FLIPPED
+            if z.isBull
+                if z.tier == 2
+                    dEl += 1
+                else
+                    dSt += 1
+                if z.btm <= px and a > 0
+                    float d1 = math.max(0.0, px - z.top) / a
+                    nDem := na(nDem) ? d1 : math.min(nDem, d1)
+            else
+                if z.tier == 2
+                    sEl += 1
+                else
+                    sSt += 1
+                if z.top >= px and a > 0
+                    float d2 = math.max(0.0, z.btm - px) / a
+                    nSup := na(nSup) ? d2 : math.min(nSup, d2)
+    [dEl, dSt, sEl, sSt, nDem, nSup]
+
+f_distTxt(float d) =>
+    na(d) ? "-" : str.tostring(d, "#.#") + " ATR"
+
+var table dash = showDash ? table.new(dashPos == "Top Left" ? position.top_left : dashPos == "Middle Right" ? position.middle_right : dashPos == "Bottom Left" ? position.bottom_left : dashPos == "Bottom Right" ? position.bottom_right : position.top_right, 2, 22, bgcolor = color.new(#0d1117, 10), frame_color = color.new(color.gray, 60), frame_width = 1, border_color = color.new(color.gray, 75), border_width = 1) : na
+
+if barstate.islast and showDash
+    [dEl, dSt, sEl, sSt, nDem, nSup] = f_zoneStats(close, atr)
+
+    // BUG-02 fix: expectancy calculation
+    float expectancy = stTrades > 0 ? stNetR / stTrades : na
+    float winRateExBE = stTrades > 0 ? stWins * 100.0 / stTrades : na
+    float beRate = stTrades > 0 ? stBE * 100.0 / stTrades : na
+    float lossRate = stTrades > 0 ? stLosses * 100.0 / stTrades : na
+    float pf = stSumLoss < 0 ? stSumWin / math.abs(stSumLoss) : na
+
+    string openTxt = "none"
+    if tOpen
+        float unreal = tDir * (close - tEntry) / tRisk
+        float remFr = tTP1Hit ? 1.0 - tp1F : 1.0
+        float openR = tRealR + remFr * unreal
+        openTxt := (tDir == 1 ? "LONG " : "SHORT ") + (openR > 0 ? "+" : "") + str.tostring(openR, "#.##") + "R"
+
+    string lastTxt = lastSigText == "none" ? "none" : lastSigText + " (" + str.tostring(bar_index - lastSigBarIdx) + " bars ago)"
+
+    int row = 0
+    f_row(dash, row, "ASR ENGINE v3", timeframe.period + " | " + syminfo.ticker, color.aqua)
+    row += 1
+    f_row(dash, row, "Asset / Market", assetType + " / " + marketType, color.white)
+    row += 1
+    f_row(dash, row, "Regime", f_regimeStr(), trendRegime == 1 ? color.lime : trendRegime == -1 ? color.red : color.gray)
+    row += 1
+    f_row(dash, row, "Structure", structureState == 1 ? "UP (HH/HL)" : structureState == -1 ? "DOWN (LH/LL)" : "RANGE", structureState == 1 ? color.lime : structureState == -1 ? color.red : color.gray)
+    row += 1
+    f_row(dash, row, "ATR Percentile", str.tostring(atrPercentile, "#.#") + "%", volRegime == 1 ? color.orange : volRegime == -1 ? color.aqua : color.white)
+    row += 1
+    f_row(dash, row, "Demand Zones", str.tostring(dEl) + " Elite / " + str.tostring(dSt) + " Strong", color.lime)
+    row += 1
+    f_row(dash, row, "Supply Zones", str.tostring(sEl) + " Elite / " + str.tostring(sSt) + " Strong", color.red)
+    row += 1
+    f_row(dash, row, "Nearest Demand", f_distTxt(nDem), color.white)
+    row += 1
+    f_row(dash, row, "Nearest Supply", f_distTxt(nSup), color.white)
+    row += 1
+    f_row(dash, row, "Last Signal", lastTxt, color.yellow)
+    row += 1
+    f_row(dash, row, "Open Trade", openTxt, tOpen ? color.aqua : color.gray)
+    row += 1
+    f_row(dash, row, "Trades", str.tostring(stTrades) + (stTrades < 30 ? " ⚠ low N" : ""), color.white)
+    row += 1
+    f_row(dash, row, "Win / BE / Loss", str.tostring(stWins) + " / " + str.tostring(stBE) + " / " + str.tostring(stLosses), color.white)
+    row += 1
+    f_row(dash, row, "Win% (ex BE)", na(winRateExBE) ? "-" : str.tostring(winRateExBE, "#.#") + "%", color.white)
+    row += 1
+    f_row(dash, row, "BE%", na(beRate) ? "-" : str.tostring(beRate, "#.#") + "%", color.gray)
+    row += 1
+    f_row(dash, row, "Expectancy (R)", na(expectancy) ? "-" : str.tostring(expectancy, "#.###") + " R", expectancy > 0 ? color.lime : color.red)
+    row += 1
+    f_row(dash, row, "Net R / PF", str.tostring(stNetR, "#.##") + " / " + (na(pf) ? (stSumWin > 0 ? "∞" : "-") : str.tostring(pf, "#.##")), stNetR >= 0 ? color.lime : color.red)
+    row += 1
+    f_row(dash, row, "Max DD / Loss Streak", str.tostring(stMaxDD, "#.##") + "R / " + str.tostring(stMaxLossStreak), color.orange)
+    row += 1
+    f_row(dash, row, "Cost Band", feasible ? "OK (ATR%=" + str.tostring(atrPct, "#.##") + ")" : "EMPTY — no signals possible!", feasible ? color.lime : color.red)
+    row += 1
+    f_row(dash, row, "Webhook", alertPass == "CHANGE_ME" ? "SET PASSPHRASE" : "passphrase set", alertPass == "CHANGE_ME" ? color.red : color.lime)
+    row += 1
+    f_row(dash, row, "Volume Data", hasVolData ? "Available" : "NONE — vol filters off", hasVolData ? color.lime : color.orange)
+    row += 1
+    f_row(dash, row, "Mode", isSpot ? "SPOT (shorts disabled)" : "Confirmed bars only", isSpot ? color.yellow : color.gray)
+
+// ============================================================================================
+// PREVIOUS DAY / WEEK LEVELS
+// ============================================================================================
 var line pdh_line = na
 var line pdl_line = na
 var label pdh_lbl = na
