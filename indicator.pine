@@ -1268,16 +1268,242 @@ f_calcContextScore(int al, int _volRegime, int _structState, bool hasSweepCtx, b
     else if _volRegime == 1   // high vol
         cs += 2.0
     else
-        box.set_right(currentBox, momentCTD)
-        i_s += 1
+        cs += 3.0   // low vol: ok for zones
+    // Structure alignment (0-5)
+    if _structState != 0
+        cs += 5.0
+    // Volume confirmation (0-5) — BUG-17 fix: only when data exists
+    if _hasVolData
+        cs += hasVolSurge ? 5.0 : 2.0
+    // Sweep context (0-5)
+    if hasSweepCtx
+        cs += 5.0
+    math.min(30.0, cs)
 
-int i_d = 0
-while i_d < array.size(demand_HT) 
-    mtfZone currentZone = array.get(demand_HT, i_d)
-    box currentBox = currentZone.b
-    if low < box.get_bottom(currentBox) 
-        array.remove(demand_HT, i_d)
-        box.delete(currentBox)
+f_scanZones(bool wantLong, sigCand best) =>
+    sigCand res = best
+    int minTierNum = sigMinTier == "Elite" ? 2 : 1
+    for z in zones
+        if z.isBull != wantLong
+            continue
+        if z.tier < minTierNum
+            continue
+        if z.sigCount >= maxSigPerZone
+            continue
+        if z.status < Z_ACTIVE or z.status > Z_FLIPPED
+            continue
+
+        int age = bar_index - z.birthBar
+        bool ageOK = age >= minZoneDuration
+
+        // Determine setup type
+        int setupType = 0
+        bool rej = wantLong ? (low <= z.top and close > z.top) : (high >= z.btm and close < z.btm)
+
+        if rej and ageOK
+            float wf = candleRange > 0 ? (wantLong ? lowerWick : upperWick) / candleRange : 0.0
+            bool dirOK = not sigReqDir or (wantLong ? (close > open) : (close < open))
+            int al = wantLong ? trendRegime : -trendRegime
+            bool trendOK = trendMode != "Hard" or al >= 0
+            bool volOK = not sigReqVol or hasVolumeSurge
+
+            if wf >= sigMinWick and dirOK and trendOK and volOK
+                // Classify setup type
+                if z.flipped and z.status == Z_FLIPPED and enableFlipRetest
+                    setupType := S_FLIP_RETEST
+                else if enableZoneReject
+                    setupType := S_ZONE_REJECT
+
+                // Check for sweep context
+                bool hasSweepCtx = false
+                if enableSweepReclaim
+                    if wantLong and sweepDnEvt
+                        hasSweepCtx := true
+                        setupType := S_SWEEP_RECLAIM
+                    else if not wantLong and sweepUpEvt
+                        hasSweepCtx := true
+                        setupType := S_SWEEP_RECLAIM
+
+                // BOS retest check
+                if enableBosRetest and setupType == S_ZONE_REJECT
+                    if wantLong and lastBosDir == 1 and (bar_index - lastBosBar) < 30
+                        setupType := S_BOS_RETEST
+                    else if not wantLong and lastBosDir == -1 and (bar_index - lastBosBar) < 30
+                        setupType := S_BOS_RETEST
+
+                if setupType > 0
+                    // Calculate composite score
+                    float zs = z.qualityScore   // Zone quality (0-35)
+                    float ss = f_calcSetupScore(setupType, wf, z.flipped, z.displacement)  // Setup quality (0-35)
+                    float cs = f_calcContextScore(al, volRegime, structureState, hasSweepCtx, hasVolumeSurge, hasVolData)  // Context (0-30)
+                    float totalScore = zs + ss + cs
+                    totalScore := math.max(0.0, math.min(100.0, totalScore))
+
+                    if totalScore >= sigMinScore and (na(res.z) or totalScore > res.score)
+                        res := sigCand.new(z, totalScore, setupType, z.htfBonus > 0, z.mtfConf, wf, zs, ss, cs)
+    res
+
+f_oppIn(bool forLong, float px) =>
+    float lvl = na
+    for z in zones
+        if z.tier >= 1
+            if forLong and not z.isBull and z.btm > px
+                lvl := na(lvl) ? z.btm : math.min(lvl, z.btm)
+            else if not forLong and z.isBull and z.top < px
+                lvl := na(lvl) ? z.top : math.max(lvl, z.top)
+    lvl
+
+f_setupName(int st) =>
+    st == S_ZONE_REJECT ? "ZONE_REJECT" : st == S_FLIP_RETEST ? "FLIP_RETEST" : st == S_SWEEP_RECLAIM ? "SWEEP_RECLAIM" : st == S_DISP_RETEST ? "DISP_RETEST" : st == S_BOS_RETEST ? "BOS_RETEST" : "UNKNOWN"
+
+// ============================================================================================
+// ALERT JSON BUILDERS  (v3 schema with features, BUG-22 fix)
+// ============================================================================================
+f_jsonEntry(string idv, string evtId, string sideTxt, string typeTxt, float scoreV, string gradeV, float en, float sl, float t1, float t2, float rpx, string why, sigCand pc) =>
+    string s = '{"v":3,"passphrase":"' + alertPass + '","event":"ENTRY","id":"' + idv + '","event_id":"' + evtId + '"'
+    s += ',"strategy":"' + strategyName + '","symbol":"' + syminfo.ticker + '","base":"' + baseTxt + '","quote":"' + quoteTxt + '"'
+    s += ',"exchange":"' + exchangeName + '","tf":"' + timeframe.period + '","market":"' + marketType + '"'
+    s += ',"side":"' + sideTxt + '","type":"' + typeTxt + '","score":' + str.tostring(math.round(scoreV)) + ',"grade":"' + gradeV + '"'
+    s += ',"entry":' + str.tostring(en, format.mintick) + ',"sl":' + str.tostring(sl, format.mintick)
+    s += ',"tp1":' + str.tostring(t1, format.mintick) + ',"tp2":' + str.tostring(t2, format.mintick)
+    s += ',"tp1_frac":' + str.tostring(tp1F, "#.###") + ',"be_after_tp1":true'
+    s += ',"risk_pct_price":' + str.tostring(rpx, "#.###") + ',"risk_pct_equity":' + str.tostring(riskPctEq, "#.###")
+    s += ',"order_type":"MARKET","max_slippage_pct":' + str.tostring(slipPct * 2, "#.####")
+    s += ',"signal_ttl_sec":' + str.tostring(math.round(chartSec * sigTtlMult))
+    s += ',"atr":' + str.tostring(atr, format.mintick) + ',"bar_time":' + str.tostring(time) + ',"ts":' + str.tostring(timenow)
+    // Features object
+    s += ',"features":{"tier":' + str.tostring(not na(pc.z) ? pc.z.tier : 0)
+    s += ',"touches":' + str.tostring(not na(pc.z) ? pc.z.touches : 0)
+    s += ',"qual_touches":' + str.tostring(not na(pc.z) ? pc.z.qualTouches : 0)
+    s += ',"reaction":' + (not na(pc.z) and pc.z.reactionEarned ? "true" : "false")
+    s += ',"displacement":' + str.tostring(not na(pc.z) ? pc.z.displacement : 0.0, "#.##")
+    s += ',"htf":' + (pc.htfC ? "true" : "false")
+    s += ',"mtf":' + (pc.mtfC ? "true" : "false")
+    s += ',"vol":' + str.tostring(volState)
+    s += ',"trend_align":' + str.tostring(trendRegime)
+    s += ',"wick_frac":' + str.tostring(pc.wickF, "#.##")
+    s += ',"flip":' + (not na(pc.z) and pc.z.flipped ? "true" : "false")
+    s += ',"atr_pct":' + str.tostring(atrPercentile, "#.#")
+    s += ',"zone_score":' + str.tostring(pc.zoneScore, "#.#")
+    s += ',"setup_score":' + str.tostring(pc.setupScore, "#.#")
+    s += ',"ctx_score":' + str.tostring(pc.ctxScore, "#.#")
+    s += ',"setup":"' + typeTxt + '"'
+    s += ',"structure":"' + (structureState == 1 ? "UP" : structureState == -1 ? "DOWN" : "RANGE") + '"'
+    s += ',"regime":"' + f_regimeStr() + '"'
+    s += '}'
+    s += ',"reason":"' + why + '"}'
+    s
+
+f_jsonExit(string idv, string sideTxt, string reasonTxt, float netR, float grossR, float px, int bars) =>
+    string s = '{"v":3,"passphrase":"' + alertPass + '","event":"EXIT","id":"' + idv + '"'
+    s += ',"strategy":"' + strategyName + '","symbol":"' + syminfo.ticker + '","side":"' + sideTxt + '","reason":"' + reasonTxt + '"'
+    s += ',"price":' + str.tostring(px, format.mintick) + ',"r_gross":' + str.tostring(grossR, "#.###") + ',"r_net":' + str.tostring(netR, "#.###")
+    s += ',"bars":' + str.tostring(bars) + ',"bar_time":' + str.tostring(time) + ',"ts":' + str.tostring(timenow) + '}'
+    s
+
+f_jsonHb(bool openTrade) =>
+    string s = '{"v":3,"passphrase":"' + alertPass + '","event":"HEARTBEAT","strategy":"' + strategyName + '"'
+    s += ',"symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","close":' + str.tostring(close, format.mintick)
+    s += ',"open_trade":' + (openTrade ? "true" : "false") + ',"bar_time":' + str.tostring(time) + ',"ts":' + str.tostring(timenow) + '}'
+    s
+
+// ============================================================================================
+// STATE: virtual trade + stats + signal bookkeeping
+// BUG-01 fix: separate WIN/LOSS/BE/TIME_EXIT accounting
+// ============================================================================================
+var bool   tOpen     = false
+var int    tDir      = 0
+var float  tEntry    = na
+var float  tSL       = na
+var float  tTP1      = na
+var float  tTP2      = na
+var float  tRisk     = na
+var float  tCostR    = 0.0
+var bool   tTP1Hit   = false
+var bool   tTP2Hit   = false
+var bool   tTrailAct = false
+var float  tTrailStop = na
+var float  tBestClose = na
+var float  tRealR    = 0.0
+var int    tBars     = 0
+var string tId       = ""
+var string tSide     = ""
+var int    tSetup    = 0
+
+// BUG-01 fix: separate outcome counters
+var int    stTrades   = 0
+var int    stWins     = 0    // TP2 or net > 0
+var int    stLosses   = 0    // SL hit
+var int    stBE       = 0    // BE after TP1
+var int    stTimeExit = 0    // time stop
+var float  stSumWin   = 0.0
+var float  stSumLoss  = 0.0
+var float  stSumBE    = 0.0
+var float  stNetR     = 0.0
+var float  stPeak     = 0.0
+var float  stMaxDD    = 0.0
+var int    stLossStreak = 0
+var int    stMaxLossStreak = 0
+var int    lastSigBarIdx = 0
+var string lastSigText   = "none"
+var int    sigDayKey     = 0
+var int    sigsToday     = 0
+var int    seqNum        = 0   // BUG-14 fix: monotonic sequence
+
+bool   entryEvt   = false
+bool   exitEvt    = false
+bool   longSig    = false
+bool   shortSig   = false
+string entryJson  = ""
+string exitReason = ""
+float  exitNetR   = 0.0
+float  exitGrossR = 0.0
+float  exitPx     = na
+int    exitBars   = 0
+string exitId     = ""
+string exitSide   = ""
+
+// ---- 1) manage the open virtual trade (BUG-03 fix: same-bar TP1→BE recheck) ----
+if confirmed and tOpen
+    tBars += 1
+    
+    // FIX-5: Calculate remaining fraction based on which TPs have been hit
+    float remF = 1.0
+    if tTP2Hit
+        remF := tp3F
+    else if tTP1Hit
+        remF := tp2F + tp3F
+    
+    bool stopHit = tDir == 1 ? low <= tSL : high >= tSL
+    bool tp1Reached = tDir == 1 ? high >= tTP1 : low <= tTP1
+    bool tp2Reached = tDir == 1 ? high >= tTP2 : low <= tTP2
+    bool trailHit = false
+    if tTrailAct and not na(tTrailStop)
+        trailHit := tDir == 1 ? low <= tTrailStop : high >= tTrailStop
+
+    bool closeOut = false
+    float xPx = na
+    string xWhy = ""
+    float xGross = 0.0
+    int xType = 0
+
+    // Step 1: Check stop/trail FIRST (conservative)
+    if trailHit and tTrailAct
+        closeOut := true
+        xPx := tTrailStop
+        xWhy := "TRAIL"
+        xType := X_TRAIL_EXIT
+        xGross := tRealR + tp3F * (tDir * (tTrailStop - tEntry) / tRisk)
+    else if stopHit
+        closeOut := true
+        xPx := tSL
+        if tTP1Hit
+            xWhy := "BE"
+            xType := X_BE_AFTER_TP1
+        else
+            xWhy := "SL"
+            xType := X_STOP_LOSS
+        xGross := tRealR + remF * (tDir * (tSL - tEntry) / tRisk)
     else
         box.set_right(currentBox, momentCTD)
         i_d += 1
