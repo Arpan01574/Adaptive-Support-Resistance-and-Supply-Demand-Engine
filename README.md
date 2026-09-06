@@ -1046,38 +1046,228 @@ A robust receiver should:
 
 | Element | Meaning |
 |---|---|
-| 🟩 Dark green box | Elite-tier demand/support zone |
-| 🟩 Light green box | Strong-tier demand/support zone |
-| 🟥 Dark red box | Elite-tier supply/resistance zone |
-| 🟥 Light red box | Strong-tier supply/resistance zone |
-| Translucent green fill | Multi-timeframe demand zone |
-| Translucent red fill | Multi-timeframe supply zone |
-| Gray dashed line | Previous day high/low |
-| White dotted line | Previous week high/low |
-
-## Limitations & Notes
-
-- Pivot-based zones confirm `right` bars after the actual pivot — an inherent lag of any repaint-safe pivot detector, not a bug.
-- This is a **visual indicator only** — it does not include `alertcondition()` alerts or `strategy()`-based backtesting.
-- Multi-timeframe supply/demand data is pulled via `request.security`; results are only as reliable as TradingView's HTF data feed for the symbol in question.
-- Requires TradingView (Pine Script v6) — not portable to other charting platforms without a rewrite.
-
-## Potential Future Work
-
-*(Ideas only — not implemented in the current version)*
-
-- Native `alertcondition()` triggers for zone formation, touch, and break events
-- Cross-timeframe confluence scoring between the pivot engine and the S&D engine
-- A companion `strategy()` version for backtesting zone-reaction entries
-
-## Disclaimer
-
-This project is a technical/charting tool for educational purposes and is **not financial advice**. Past zone reactions do not guarantee future price behavior. Always backtest and use independent risk management before trading with any indicator.
-
-## License
-
-No license is currently specified, so default copyright applies (all rights reserved). If you intend to share or accept contributions, consider adding an [MIT License](https://choosealicense.com/licenses/mit/) — a common permissive choice for TradingView community scripts.
+| Dark green box | Elite demand (support) zone |
+| Light green box | Strong demand zone |
+| Dark red box | Elite supply (resistance) zone |
+| Light red box | Strong supply zone |
+| Blue / yellow border | Demand / supply zone border (defaults) |
+| Dashed border | Zone that has flipped polarity |
+| Box text `E` / `S` | Elite / Strong, shown until the first retest |
+| Box text `R` / `F` | Retested / Flipped |
+| `xN` | Number of valid touches |
+| `fbN` | Number of failed breaks |
+| Faded box that stops extending | Retired Elite zone kept as history |
+| Translucent green / red box with a timeframe label | Multi-timeframe demand / supply zone |
+| `BOS↑` / `BOS↓` | Break of structure up / down |
+| `SW↑` / `SW↓` | Sell-side / buy-side liquidity sweep |
+| `BUY B72 ZONE_REJECT` | Entry label: side, grade and score, setup type (prefixed `FLIP` for flipped zones) |
+| `… +2.06R TRAIL` | The same label updated with the net result and exit reason when the trade closes |
+| Red box | Risk area (entry to stop) |
+| Green box | Reward area (entry to TP2) |
+| Dotted green line | TP1 level |
+| Orange step line | Higher-timeframe trend EMA (previous HTF bar) |
+| Purple step line | Session VWAP (optional) |
+| Gray dashed lines | Previous day high / low (`PDH` / `PDL`) |
+| White dotted lines | Previous week high / low (`PWH` / `PWL`) |
 
 ---
 
+## Non-Repainting and Data Integrity
+
+- **Closed-bar state.** Zones, structure, liquidity, signals, trades and statistics change only on confirmed bars (`barstate.isconfirmed`). Historical and live behaviour are identical, and nothing is created, moved or deleted on an unconfirmed bar.
+- **No look-ahead on higher timeframes.** Every `request.security()` call uses a one-bar offset together with `lookahead_on`, so only fully closed higher-timeframe bars are visible.
+- **Pivot lag is by design.** A pivot needs *Look Right* bars to confirm, so zones appear that many bars after the pivot and are drawn from the confirmation bar. Structure swings lag by *Swing Length* bars.
+- **Explicit volume handling.** When a symbol has no volume, volume filters are disabled and the dashboard says so; the script never pretends a surge occurred.
+- **UTC bookkeeping.** Daily caps, weekend skipping and the session window all use UTC.
+- **Deterministic ordering.** On any bar, exits are processed before entries and stops before targets.
+
+---
+
+## Performance and Limits
+
+- Drawing limits are set to the Pine maximum of 500 boxes, 500 labels and 500 lines, and `max_bars_back` is 5000. Zone memory, S&D boxes, retired boxes and kept trade visuals are all capped to stay within them.
+- The script makes four fixed `request.security()` calls (HTF swings, trend, daily levels, weekly levels) plus one per enabled S&D timeframe, at most nine in total.
+- If the chart feels slow: lower **Lookback Limit**, disable unused S&D timeframes, switch **Draw Mode** to `Lines`, reduce **Max Retired Zone Boxes** and **Trades To Keep On Chart**, or turn off structure and sweep labels.
+- Only the most recent *Lookback Limit* bars are processed by the zone, S&D and signal engines.
+
+---
+
+## Troubleshooting and FAQ
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| No zones appear | Too few confirmed pivots yet, or the creation filters are strict | Scroll back or wait; lower *Momentum Count* or *Displacement Body*; check *Lookback Limit* |
+| No signals | Dashboard shows `Cost Band: EMPTY` | Move to a higher timeframe, lower fees/slippage if they are overstated, or raise *Max Risk (ATR)* |
+| No signals | Score, tier or session gates are too strict | Lower *Minimum Signal Score*, set *Minimum Zone Tier* to `Strong`, widen *Allowed Session (UTC)* |
+| No signals | A virtual trade is still open, the daily cap is reached, or a cooldown applies | Check *Open Trade*, *Max Signals Per Day*, *Cooldown* |
+| No shorts on crypto | Market is detected as `SPOT` | Set *Market Type Override* to `PERPETUAL` |
+| Shorts appear on a spot pair | A ticker ending in `USDT` is treated as a perpetual | Set *Market Type Override* to `SPOT` |
+| Runtime error: *TP2 must be greater than TP1* | Inputs are inverted | Make *TP2 (R)* larger than *TP1 (R)* |
+| Runtime error: *HTF / Trend timeframe must be >= chart timeframe* | The chart is on a higher timeframe than *Higher Timeframe* or *Trend Timeframe* | Set both to the chart timeframe or higher (for example `D` on a daily chart) |
+| Dashboard `Webhook: SET PASSPHRASE` | Passphrase is still `CHANGE_ME` | Set a private passphrase and recreate the alert |
+| Alert never fires | Wrong condition, or the alert predates a settings change | Choose *Any alert() function call* and recreate the alert |
+| `Volume Data: NONE` | The feed has no volume (common for some FX/CFD symbols) | Volume filters are disabled automatically; this is expected |
+| Boxes missing or chart slow | Drawing or request limits | See [Performance and Limits](#performance-and-limits) |
+
+**Does it repaint?** No. State changes only on closed bars, and higher-timeframe data is offset by one bar. Pivots appear *Look Right* bars late by design.
+
+**Can I backtest it in the Strategy Tester?** Not directly, because this is an indicator. The dashboard's virtual trade statistics are an approximation. For rigorous testing, reproduce the rules in a `strategy()` or in an external engine, and validate out of sample.
+
+**Which markets and timeframes?** Any symbol with OHLC data. The cost gate means liquid markets from about 15 minutes upward are the natural fit; very low timeframes or quiet markets can leave the cost band empty.
+
+**Why did a trade close as "BE" yet show positive R?** Break-even means the stop at entry was hit *after* TP1 had banked its partial, so the realised result is usually positive.
+
+**Why do zones start at the confirmation bar rather than the pivot?** Drawing from the pivot bar would imply knowledge that did not yet exist, which is look-ahead.
+
+**Does the indicator place trades?** No. It reports signals and, optionally, sends alerts. Execution is entirely up to you.
+
+---
+
+## Known Limitations
+
+- **Virtual trades are an approximation.** Entries are at the signal bar's close, costs are a constant percentage, funding rates are ignored, partial fills and order-book effects are not modelled, only one position is open at a time, and the same-bar rule is conservative (stop before targets). Real results will differ.
+- **Reserved and experimental features.** `DISPLACEMENT_RETEST` has a toggle but no detector yet. `SWEEP_RECLAIM`, `BOS_RETEST` and the session VWAP are marked TEST. Multi-bar reclaim tracking, change-of-character flags and fair-value-gap flags are computed internally but are not yet used as signal triggers or score inputs.
+- **Structure scoring is direction-agnostic.** The Context score adds the structure points whenever the state is `UP` or `DOWN`, regardless of trade direction.
+- **Trend filter semantics.** `Off` and `Soft` both allow counter-trend setups; only `Hard` blocks them. `Off` additionally hides the trend EMA.
+- **Alert granularity.** `EXIT` events are sent when a virtual trade fully closes; TP1 and TP2 partial fills are not alerted separately.
+- **Heuristic detection.** Asset-class and market-type detection are ticker-based heuristics; always check the dashboard and use the overrides for unusual symbols. Every crypto ticker ending in `USDT` is treated as a perpetual.
+- **Sample size.** Statistics from fewer than 30 trades carry little information, and tuning settings on the same history that produced the statistics overfits.
+- **Platform limits.** TradingView caps drawing objects and `request.*` calls, and data quality (volume in particular) varies by feed.
+- **Chart types.** Only standard chart types are supported.
+- **Single instrument.** There is no portfolio view or cross-symbol risk management.
+
+---
+
+## Roadmap
+
+*Ideas only — none of these are implemented in the current version.*
+
+- [ ] Implement the `DISPLACEMENT_RETEST` detector.
+- [ ] Promote `SWEEP_RECLAIM` and `BOS_RETEST` from **Test** after validation across asset classes.
+- [ ] Use change-of-character, fair-value-gap and multi-bar reclaim as optional scoring inputs.
+- [ ] Direction-aware structure scoring.
+- [ ] Per-setup performance breakdown on the dashboard.
+- [ ] Funding-aware cost model for perpetuals.
+- [ ] Partial-fill events (TP1 / TP2) in the alert schema.
+- [ ] A `strategy()` companion for walk-forward testing in the Strategy Tester.
+- [ ] A reference implementation outside TradingView that consumes the JSON v3 contract for research, parity testing and execution.
+- [ ] Annotated screenshots and a step-by-step trade walkthrough.
+
+---
+
+## Changelog
+
+### v3.0.0 — Signal Engine
+
+**Added**
+
+- Market structure engine (swings, BOS↑ / BOS↓, UP / DOWN / RANGE state).
+- Liquidity engine (equal highs/lows, sweeps with `SW↑` / `SW↓` labels).
+- Regime engine (higher-timeframe trend × ATR-percentile volatility).
+- Signal engine with four implemented setup types and a 0–100 composite score (zone 35 + setup 35 + context 30), graded A / B / C.
+- Risk model: ATR stop, risk cap, room check, TP1 / TP2 partials, break-even, trailing runner and time stop.
+- Cost model (fees + slippage in R), round-trip cost gate and feasibility check.
+- Virtual trade tracker with separate WIN / LOSS / BREAK-EVEN accounting, expectancy, profit factor, max drawdown and loss streak.
+- Versioned JSON alerts (schema v3: `ENTRY`, `EXIT`, `HEARTBEAT`) and non-authenticated `alertcondition()` alerts.
+- 22-row dashboard, trade boxes and labels, optional session VWAP and HTF trend EMA plot.
+- Session, weekend, cooldown, daily and per-zone caps; HTF trend filter (Off / Soft / Hard).
+- Previous-day/week confluence in zone scoring; asset-class and market-type overrides; automatic short block on spot markets.
+
+**Changed**
+
+- Zone engine rebuilt around a single zone array with an eight-state life-cycle and continuous freshness decay.
+- Strength model replaced by a 0–35 quality score with Strong (≥ 12) and Elite (≥ 22) tiers.
+- Zone age is measured from the confirmation bar rather than the pivot bar.
+- Zone creation now requires displacement or a volume spike in addition to momentum candles.
+- Overlap merging compares zones by price proximity rather than array neighbours.
+- Pivots are always detected on true highs and lows (the pivot source option was removed).
+- The "Show Forming Zones" option was removed; S&D boxes use closed higher-timeframe candles only.
+- Defaults: *Lookback Limit* 2000 → 3000, *Min Zone Age* 5 → 3.
+
+
+### Previous release — Support & Resistance indicator
+
+Pivot-based support/resistance zones with a counter-based strength model, polarity flip, multi-timeframe supply/demand boxes, previous day/week levels and automatic asset-class tuning. It was a visual indicator only, with no signals, alerts or accounting.
+
+---
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome through GitHub Issues and Pull Requests.
+
+**Reporting a bug** — please include the symbol and exchange, timeframe, a screenshot of the indicator settings and the dashboard, what you expected versus what happened, and any Pine Editor error text.
+
+**Proposing a feature** — open an issue first. Describe the use case and, where possible, the evidence that it improves signal quality.
+
+**Code conventions**
+
+- Pine Script v6; inputs live in numbered groups declared as `G_*` constants.
+- Constants use prefixes: `Z_*` (zone status), `S_*` (setup type), `X_*` (exit reason). Helper functions use the `f_` prefix. User-defined types use lowerCamelCase.
+- Preserve the **non-repainting contract**: new state mutates only on confirmed bars, and higher-timeframe data uses a `[1]` offset with `lookahead_on`.
+- Any alert-schema change must be versioned (bump `"v"`) and documented here.
+
+**Pull request checklist**
+
+- [ ] Compiles in the Pine Editor without errors on Pine v6
+- [ ] Tested on at least three asset classes and two timeframes
+- [ ] No repainting introduced (verify with Bar Replay)
+- [ ] Inputs are grouped, bounded and have tooltips
+- [ ] Alert JSON still validates, with schema changes versioned
+- [ ] README and changelog updated
+
+---
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **ATR** | Average True Range, the volatility unit used for zone sizes, stops and tolerances |
+| **BOS** | Break of structure: a close beyond the latest swing high/low by a buffer |
+| **Break-even (BE)** | Exit at the entry price after TP1 has been banked |
+| **Confluence** | Independent evidence that a zone matters (HTF swing, MTF box, previous day/week level, volume) |
+| **Demand zone** | Area below price where buyers previously overwhelmed sellers; acts as support |
+| **Supply zone** | Area above price where sellers previously overwhelmed buyers; acts as resistance |
+| **Displacement** | A large-bodied candle (relative to ATR) showing decisive intent |
+| **Elite / Strong** | Zone quality tiers: score ≥ 22 / ≥ 12 out of 35 |
+| **Expectancy** | Average net R per closed trade |
+| **Failed break** | A wick beyond a zone with a close back inside |
+| **Freshness** | A zone's age-based multiplier, falling linearly from 100 to 0 |
+| **HTF / MTF** | Higher timeframe / multi-timeframe |
+| **Liquidity sweep** | A bar that trades beyond a prior swing or equal high/low and closes back inside |
+| **Polarity flip** | A broken support becoming resistance, or the reverse |
+| **Profit factor** | Sum of winning net R ÷ absolute sum of losing net R |
+| **R-multiple** | A result expressed in units of initial risk (1R = entry-to-stop distance) |
+| **Regime** | Combined trend (up / down / range) and volatility (high / normal / low) state |
+| **Rejection wick** | A wick that pushes into a zone and is rejected, with the bar closing back outside |
+| **Retest** | Price returning to a formed or flipped zone |
+| **Slippage** | Difference between the expected and the executed price |
+| **TTL** | Time-to-live: how long an alert's signal remains valid |
+| **Webhook** | An HTTP POST that TradingView sends to your URL when an alert fires |
+
+---
+
+## Disclaimer
+
+This project is a charting and research tool provided for **educational and informational purposes only**. It is **not financial, investment or trading advice**, and nothing in this repository is a recommendation to buy or sell any instrument.
+
+- Trading leveraged products such as crypto perpetuals, futures, CFDs and FX carries a high risk of loss, including losing more than your initial deposit.
+- Virtual-trade statistics are simulations produced with hindsight, simplified cost assumptions and no market impact. Past performance, real or simulated, does not guarantee future results.
+- Zones and signals describe historical price behaviour; they do not predict the future.
+- The software is provided *as is*, without warranty of any kind, and may contain errors. Test on paper or demo accounts first, verify every alert payload before connecting it to any execution system, and never risk money you cannot afford to lose.
+- Automated trading adds operational risk (connectivity, duplicated or delayed alerts, exchange errors). You are solely responsible for any system you build on top of this indicator.
+
+To the maximum extent permitted by law, the author accepts no liability for any loss or damage arising from the use of this software.
+
+---
+
+## License
+
+No open-source license has been applied to this repository yet, so default copyright applies: **all rights reserved** by the author. To reuse, adapt or redistribute any part of it, please open an issue to ask for permission.
+
+---
+
+<div align="center">
+
 Built by **Arpan** · Pine Script v6 · TradingView
+
+</div>
