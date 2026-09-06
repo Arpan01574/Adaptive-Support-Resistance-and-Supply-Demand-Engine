@@ -620,83 +620,427 @@ All settings appear in numbered groups under **Settings → Inputs**. Defaults b
 </details>
 
 <details>
-<summary><strong>Institutional Engine</strong></summary>
+<summary><strong>2 | Zone Quality Engine</strong></summary>
 
-| Input | Default | Description |
-|---|---|---|
-| Momentum Body Mult | 0.5 | Candle-body multiplier required to count as a "strong" candle |
-| Momentum Count | 2 | Minimum momentum candles needed to validate a new zone |
-| Max Zone Size (ATR) | 1.8 | Caps zone height as a multiple of ATR |
-| Merge Overlapping Zones | On | Merges intersecting zones into one stronger zone |
-| Min Zone Duration (Bars) | 5 | Hides zones younger than this many bars |
-| Zone Merge Dist (ATR) | 0.3 | Distance (in ATR) within which nearby zones merge |
-| Decay Factor (Bars) | 800 | Bars over which a zone's score decays by 1 |
-
-</details>
-
-<details>
-<summary><strong>Pivot Zones (Support & Resistance)</strong></summary>
-
-| Input | Default | Description |
-|---|---|---|
-| Look Left / Look Right | 12 / 12 | Bars checked left/right for pivot confirmation |
-| Max Pivot Memory | 10 | Max active zones tracked per side |
-| ATR Length | 20 | Lookback for zone-sizing ATR |
-| Zone Width (ATR) | 0.5 | Zone half-width as a multiple of ATR |
-| Max Zone Percent | 4 | Caps zone width as a % of price |
-| Source For Pivots | High/Low | HA, High/Low Body, or High/Low |
-| Extend Right | Off | Extend zones to the chart's right edge |
-| Show Level Labels | Off | Prints the price range beside each zone |
-| Flip Zones on Break (Polarity) | On | Converts broken support into resistance and vice versa |
-| Show Elite Broken Zones | On | Preserves high-scoring zones as faded history after they break |
+| Setting | Default | Range / options | Description |
+|---|---|---|---|
+| Momentum Body Mult | `0.5` | ≥ 0.1 | A candle is a momentum candle when its body is at least this × the 20-bar average body. Ignored when Auto-Tune is on. |
+| Momentum Count | `2` | ≥ 1 | Minimum momentum candles (in the zone's direction) in the pivot confirmation window. |
+| Max Zone Size (ATR) | `1.8` | ≥ 0.3 | Hard cap on zone height; oversized zones are trimmed symmetrically. |
+| Merge Overlapping Zones | On | — | Merge intersecting same-polarity zones (also merges overlapping MTF S&D boxes). |
+| Min Zone Age From Confirm (Bars) | `3` | ≥ 0 | Bars after confirmation before a zone becomes Active. |
+| Zone Merge Dist (ATR) | `0.3` | ≥ 0 | A new pivot within this distance of an existing same-side zone is merged into it. |
+| Decay Factor (Bars) | `800` | ≥ 50 | Zones expire after 2× this many bars; freshness decays linearly. Ignored when Auto-Tune is on. |
+| Displacement Body (ATR mult) | `1.5` | ≥ 0.5 | The pivot-bar body must reach this × *Momentum Body Mult* × ATR to count as displacement. |
 
 </details>
 
 <details>
-<summary><strong>Supply & Demand Zones</strong></summary>
+<summary><strong>3 | Pivot Zones S&R</strong></summary>
 
-| Input | Default | Description |
-|---|---|---|
-| Zone Difference Scale | 1.8 | Minimum candle-range expansion to flag a supply/demand candle |
-| Zone Extension (Bars) | 15 | How far zones extend to the right |
-| Enable Supply / Demand | On / On | Toggle each zone type independently |
-| Display S&D Text | On | Shows the source timeframe label on each zone |
+| Setting | Default | Range / options | Description |
+|---|---|---|---|
+| Look Left | `12` | ≥ 1 | Bars to the left that a pivot must dominate. |
+| Look Right | `12` | 1–50 | Bars to the right that confirm a pivot; this is also the confirmation lag. |
+| Max Pivot Memory | `10` | 2–40 | Maximum zones kept per side. Ignored when Auto-Tune is on. |
+| ATR Length | `20` | ≥ 1 | ATR period used throughout the script. |
+| Zone Width (ATR) | `0.5` | ≥ 0.05 | Zone height as a multiple of ATR. |
+| Max Zone Percent | `4.0` | ≥ 0.1 | Cap on zone height as a percentage of price. |
+| Extend Right | Off | — | Extend zones to the right edge of the chart. |
+| Show Level Labels | Off | — | Print the zone's price range beside it. |
+| Flip Zones on Break (Polarity) | On | — | Validated breaks flip a zone's polarity instead of removing it. |
+| Show Elite Broken Zones | On | — | Keep faded history boxes for Elite zones that break or expire. |
+| Detect Pivot Highs | On | — | Create supply zones from pivot highs. |
+| Detect Pivot Lows | On | — | Create demand zones from pivot lows. |
+| Bull Border | `#64b5f6`, 60% transparent | colour | Border colour of demand zones. |
+| Bear Border | `#ffeb3b`, 60% transparent | colour | Border colour of supply zones. |
 
 </details>
 
 <details>
-<summary><strong>Supply & Demand Timeframes</strong></summary>
+<summary><strong>4 | Supply & Demand (MTF)</strong></summary>
 
-| Input | Default |
+| Setting | Default | Range / options | Description |
+|---|---|---|---|
+| Zone Difference Scale | `1.8` | ≥ 1.0 | Minimum ratio of the reversal candle's body to the previous candle's body. |
+| Zone Extension (Bars) | `15` | ≥ 1 | How far S&D boxes project to the right. |
+| Max S&D Boxes Per Side | `20` | 2–80 | The oldest boxes are deleted when this is exceeded. |
+| Show 30m Zones | Off | — | Use 30-minute candles. |
+| Show 1h Zones | On | — | Use 1-hour candles. |
+| Show 4h Zones | On | — | Use 4-hour candles. |
+| Show Daily Zones | Off | — | Use daily candles. |
+| Show Weekly Zones | Off | — | Use weekly candles. |
+
+A timeframe is only used when the chart timeframe is equal to or lower than it.
+
+</details>
+
+<details>
+<summary><strong>5 | S&D Aesthetics</strong></summary>
+
+| Setting | Default | Description |
+|---|---|---|
+| Enable Supply Zones | On | Show supply boxes. |
+| Supply BG | `rgb(242, 54, 69)`, 94% transparent | Supply fill. |
+| Supply Brdr | `rgb(209, 212, 220)`, 90% transparent | Supply border. |
+| Enable Demand Zones | On | Show demand boxes. |
+| Demand BG | `rgb(76, 175, 80)`, 94% transparent | Demand fill. |
+| Demand Brdr | `rgb(209, 212, 220)`, 80% transparent | Demand border. |
+| Display S&D Text | On | Show the timeframe label inside each box. |
+| Text Color | white | Label colour. |
+| Text Size | `Small` | Auto · Tiny · Small · Normal · Large · Huge. |
+
+</details>
+
+<details>
+<summary><strong>6 | Volume Filter</strong></summary>
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| Volume SMA Length | `20` | ≥ 2 | Baseline for the zone-creation volume spike test (pivot-bar volume above 1.5× the average). |
+| Volume Surge Threshold (%) | `20.0` | — | A *surge* is declared when the 5-bar volume EMA exceeds the 10-bar volume EMA by more than this percentage. |
+
+Without volume data, both filters switch themselves off rather than defaulting to "surge".
+
+</details>
+
+<details>
+<summary><strong>7 | Signal Engine</strong></summary>
+
+| Setting | Default | Range / options | Description |
+|---|---|---|---|
+| Enable Signals | On | — | Master switch for signals, virtual trades and entry/exit alerts. |
+| Allow Longs | On | — | Permit long setups. |
+| Allow Shorts | On | — | Permit short setups (always off on `SPOT`). |
+| Minimum Zone Tier | `Strong` | Strong · Elite | Lowest zone tier eligible to produce a signal. |
+| Minimum Signal Score (0-100) | `55` | 0–100 | Composite score threshold. |
+| Min Rejection Wick (fraction of range) | `0.30` | 0–1 | Required rejection wick as a share of the bar's range; also defines a *qualified* touch. |
+| Require Candle Direction | Off | — | Longs need a bullish close; shorts a bearish close. |
+| Require Volume Surge | Off | — | The signal bar must coincide with a volume surge. |
+| Max Signals Per Zone | `2` | 1–10 | Cap on signals issued from one zone (resets when a zone flips). |
+| Cooldown (Bars) | `6` | ≥ 0 | Minimum bars between signals. |
+| Max Signals Per Day (UTC) | `4` | 1–50 | Daily cap, counted per UTC day. |
+| HTF Trend Filter | `Soft` | Off · Soft · Hard | Hard blocks counter-trend setups; Soft allows them but they score lower; Off applies no gating and hides the trend EMA. |
+| Trend Timeframe | `240` | ≥ chart timeframe | Timeframe of the trend EMA. |
+| Trend EMA Length | `50` | ≥ 5 | Length of the trend EMA. |
+| Allowed Session (UTC) | `0000-2359` | session string | Signals are only produced inside this UTC window. |
+| Skip Weekends | Off | — | No signals on Saturday or Sunday (UTC). |
+| Setup: ZONE_REJECT | On | — | Enable the core rejection setup. |
+| Setup: FLIP_RETEST | On | — | Enable retests of flipped zones. |
+| Setup: SWEEP_RECLAIM | On | — | **Test.** Enable liquidity sweep + reclaim at a zone. |
+| Setup: DISPLACEMENT_RETEST | Off | — | **Test / reserved.** The toggle exists; the detector is not implemented yet. |
+| Setup: BOS_RETEST | Off | — | **Test.** Enable retests after a break of structure. |
+
+</details>
+
+<details>
+<summary><strong>8 | Risk Model & Costs</strong></summary>
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| SL Buffer (ATR) | `0.50` | ≥ 0 | Extra distance beyond the structural stop. |
+| Max Risk (ATR) | `2.5` | ≥ 0.3 | Reject trades whose stop is farther than this. |
+| TP1 (R) | `1.5` | ≥ 0.2 | First target in R. |
+| TP2 (R) | `3.0` | ≥ 0.5 | Second target in R. Must be greater than TP1. |
+| Close % At TP1 | `33.0` | 10–100 | Share of the position closed at TP1. |
+| Close % At TP2 | `33.0` | 0–100 | Share closed at TP2. The rest becomes the trailing runner. |
+| Trailing Stop (ATR) | `1.5` | ≥ 0.5 | Trailing distance for the runner. |
+| Min Room To Opposing Zone (R) | `2.0` | ≥ 0 | Minimum distance to the nearest opposing Strong/Elite zone, in R. |
+| Time Stop (Bars) | `60` | ≥ 5 | Maximum trade duration in bars. |
+| Fee Per Side (%) | `0.04` | ≥ 0 | Exchange fee per side. The default is a typical USDT-margined futures taker fee. |
+| Slippage Per Side (%) | `0.02` | ≥ 0 | Assumed slippage per side. |
+| Max Round-Trip Cost (R) | `0.15` | ≥ 0 | Skip trades whose total cost exceeds this fraction of 1R. |
+| Risk Per Trade (% equity) | `0.5` | 0.01–5 | Reported in alerts for position sizing; it does not change the virtual R accounting. |
+| Signal TTL (× bar period) | `2.0` | ≥ 0.5 | Alert time-to-live = bar period × this value. |
+
+</details>
+
+<details>
+<summary><strong>9 | Market Structure</strong></summary>
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| Swing Length | `5` | 2–20 | Bars on each side that confirm a structure swing. |
+| BOS Confirm (ATR beyond swing) | `0.1` | ≥ 0 | How far beyond the swing a close must be to count as a BOS. |
+| Show Structure Labels | On | — | Print `BOS↑` / `BOS↓` labels. |
+
+</details>
+
+<details>
+<summary><strong>10 | Liquidity Engine</strong></summary>
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| Equal High/Low Tolerance (ATR) | `0.15` | ≥ 0.01 | Maximum gap between two swings for them to count as equal. |
+| Min Sweep Depth (ATR) | `0.05` | ≥ 0.01 | How far beyond the level a sweep must trade. |
+| Max Reclaim Bars | `3` | 1–10 | Window of the reclaim tracker that follows closes back through a swept level. |
+| Show Sweep Labels | On | — | Print `SW↑` / `SW↓` labels. |
+
+</details>
+
+<details>
+<summary><strong>11 | Regime Engine</strong></summary>
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| ATR Percentile Window | `500` | ≥ 50 | Bars used for the volatility percentile rank. |
+| High Vol Percentile | `75.0` | 50–99 | At or above this rank, volatility is High. |
+| Low Vol Percentile | `25.0` | 1–50 | At or below this rank, volatility is Low. |
+| Trend Flat Band (ATR) | `0.25` | ≥ 0 | Distance between the HTF close and its EMA inside which the trend is flat. |
+
+</details>
+
+<details>
+<summary><strong>12 | Alerts / Webhook</strong></summary>
+
+| Setting | Default | Range | Description |
+|---|---|---|---|
+| Webhook Passphrase | `CHANGE_ME` | text | Shared secret included in every `alert()` payload. Not included in `alertcondition()` messages. |
+| Strategy Name | `ASR_v3` | text | Reported in the payload's `strategy` field. |
+| Exchange Tag | `BINANCE` | text | Label only; reported in the payload's `exchange` field. |
+| Send EXIT Alerts | On | — | Emit an `EXIT` event when a virtual trade closes. |
+| Send HEARTBEAT Alerts | Off | — | Emit a periodic liveness event. |
+| Heartbeat Every N Bars | `15` | ≥ 1 | Heartbeat interval. |
+
+</details>
+
+<details>
+<summary><strong>13 | Dashboard & Visuals</strong></summary>
+
+| Setting | Default | Range / options | Description |
+|---|---|---|---|
+| Show Dashboard | On | — | Show the statistics table. |
+| Dashboard Position | `Top Right` | Top Left · Top Right · Middle Right · Bottom Left · Bottom Right | Table placement. |
+| Show Trade Boxes & Labels | On | — | Draw entry labels and risk/reward boxes. |
+| Trades To Keep On Chart | `15` | 1–60 | Older trade visuals are deleted. |
+| Show HTF Trend EMA | On | — | Plot the higher-timeframe trend EMA. |
+| Show Session VWAP | Off | — | **Test.** Plot a daily-reset VWAP (needs volume data). |
+| Max Retired Zone Boxes | `15` | 0–50 | Cap on faded history boxes. |
+
+</details>
+
+---
+
+## Alerts and Webhook Integration
+
+The script offers two alert mechanisms. Use one or the other per alert.
+
+| Mechanism | Condition to select | Content | Best for |
+|---|---|---|---|
+| **`alert()` events** | *Any alert() function call* | Full versioned JSON with passphrase | Webhooks and automation |
+| **`alertcondition()`** | `ASR v3 Long`, `ASR v3 Short`, `ASR v3 Exit` (all marked *non-auth*) | Minimal JSON, **no passphrase** | Push, e-mail or chat notifications |
+
+All alerts fire once per bar close.
+
+### Setting Up Alerts
+
+1. In the indicator settings, change **Webhook Passphrase** from `CHANGE_ME`, and review **Strategy Name** and **Exchange Tag**. The dashboard shows `SET PASSPHRASE` in red until you do.
+2. Open **Create Alert** (`Alt+A`).
+3. Set **Condition** to the indicator (`ASRv3`) and choose **Any alert() function call**.
+4. Under **Notifications → Webhook URL**, enter your HTTPS endpoint (TradingView requires HTTPS on port 443).
+5. Create the alert. The JSON body is generated by the script, so no message text needs to be configured.
+
+> [!IMPORTANT]
+> TradingView alerts keep the settings they were created with. After changing any input, delete and recreate the alert.
+
+### Event Types
+
+| Event | Emitted when |
 |---|---|
-| Show Forming Zones | Off |
-| 30m | Off |
-| 1h | On |
-| 4h | On |
-| Daily | Off |
-| Weekly | Off |
+| `ENTRY` | A signal passes every gate and a virtual trade opens |
+| `EXIT` | The virtual trade fully closes (`SL`, `BE`, `TP2`, `TRAIL` or `TIME`). Partial take-profits are **not** alerted individually. |
+| `HEARTBEAT` | Every *Heartbeat Every N Bars* bars, if enabled |
 
-</details>
+If `EXIT` and `ENTRY` occur on the same bar, `EXIT` is sent first.
+
+### ENTRY Payload
+
+Sent as one compact line; pretty-printed here for readability.
+
+```json
+{
+  "v": 3,
+  "passphrase": "YOUR_PASSPHRASE",
+  "event": "ENTRY",
+  "id": "BTCUSDT.P_15_1790000000000_LONG",
+  "event_id": "BTCUSDT.P_15_1790000000000_LONG_17",
+  "strategy": "ASR_v3",
+  "symbol": "BTCUSDT.P",
+  "base": "BTC",
+  "quote": "USDT",
+  "exchange": "BINANCE",
+  "tf": "15",
+  "market": "PERPETUAL",
+  "side": "LONG",
+  "type": "ZONE_REJECT",
+  "score": 72,
+  "grade": "B",
+  "entry": 64250.0,
+  "sl": 63650.0,
+  "tp1": 65150.0,
+  "tp2": 66050.0,
+  "tp1_frac": 0.33,
+  "be_after_tp1": true,
+  "risk_pct_price": 0.934,
+  "risk_pct_equity": 0.5,
+  "order_type": "MARKET",
+  "max_slippage_pct": 0.04,
+  "signal_ttl_sec": 1800,
+  "atr": 330.0,
+  "bar_time": 1790000000000,
+  "ts": 1790000900123,
+  "features": {
+    "tier": 2,
+    "touches": 2,
+    "qual_touches": 2,
+    "reaction": true,
+    "displacement": 1.42,
+    "htf": true,
+    "mtf": false,
+    "vol": 2,
+    "trend_align": 1,
+    "wick_frac": 0.46,
+    "flip": false,
+    "atr_pct": 61.4,
+    "zone_score": 24.7,
+    "setup_score": 22.3,
+    "ctx_score": 25,
+    "setup": "ZONE_REJECT",
+    "structure": "UP",
+    "regime": "TREND↑"
+  },
+  "reason": "ZONE_REJECT Elite Q25 +HTF t=2 w=0.46"
+}
+```
 
 <details>
-<summary><strong>Detection & Volume Filter</strong></summary>
+<summary><strong>ENTRY field reference</strong></summary>
 
-| Input | Default | Description |
+| Field | Type | Description |
 |---|---|---|
-| Detect Pivot Highs / Lows | On / On | Enable each pivot side independently |
-| Volume SMA Length | 20 | Baseline volume average length |
-| Volume Surge Threshold (%) | 20.0 | Minimum 5/10 EMA volume oscillator reading to confirm a breakout |
+| `v` | int | Schema version (`3`) |
+| `passphrase` | string | Shared secret from the *Webhook Passphrase* input |
+| `event` | string | `ENTRY` |
+| `id` | string | `<ticker>_<timeframe>_<bar open time ms>_<SIDE>`; shared by the `ENTRY` and its `EXIT` |
+| `event_id` | string | `id` plus a monotonic sequence number; unique per entry, use it for idempotency |
+| `strategy` | string | *Strategy Name* input |
+| `symbol` | string | TradingView ticker (for example `BTCUSDT.P`) |
+| `base` / `quote` | string | Base and quote currency (base is empty when not applicable) |
+| `exchange` | string | *Exchange Tag* input (a label only) |
+| `tf` | string | Chart timeframe (`15`, `240`, `D`, …) |
+| `market` | string | `SPOT`, `PERPETUAL`, `FUTURES`, `FOREX`, `CFD` or `OTHER` |
+| `side` | string | `LONG` or `SHORT` |
+| `type` | string | Setup type |
+| `score` | int | Composite score, 0–100 |
+| `grade` | string | `A` ≥ 80, `B` ≥ 65, otherwise `C` |
+| `entry` / `sl` / `tp1` / `tp2` | float | Prices formatted to the symbol's tick size |
+| `tp1_frac` | float | Fraction of the position to close at TP1 |
+| `be_after_tp1` | bool | Always `true`: the stop moves to entry after TP1 |
+| `risk_pct_price` | float | Entry-to-stop distance as a % of entry |
+| `risk_pct_equity` | float | *Risk Per Trade (% equity)* input |
+| `order_type` | string | `MARKET` |
+| `max_slippage_pct` | float | Maximum tolerated entry slippage: 2 × *Slippage Per Side* |
+| `signal_ttl_sec` | int | Seconds after which the signal is stale: bar period × *Signal TTL* |
+| `atr` | float | ATR at the signal bar |
+| `bar_time` | int | Signal bar open time, epoch milliseconds (UTC) |
+| `ts` | int | Alert timestamp, epoch milliseconds |
+| `features` | object | Score components and context (below) |
+| `reason` | string | Human-readable summary |
+
+**`features` object**
+
+| Field | Type | Description |
+|---|---|---|
+| `tier` | int | `1` Strong, `2` Elite |
+| `touches` / `qual_touches` | int | Total and qualified touches of the zone |
+| `reaction` | bool | The zone has earned its post-touch reaction |
+| `displacement` | float | Zone displacement (pivot-bar body ÷ ATR) |
+| `htf` / `mtf` | bool | Higher-timeframe swing confluence / MTF S&D overlap |
+| `vol` | int | Volume state on the signal bar: `0` none, `1` present, `2` surge |
+| `trend_align` | int | Higher-timeframe trend regime: `1` up, `-1` down, `0` range (market direction, not trade-relative) |
+| `wick_frac` | float | Rejection wick as a fraction of the bar's range |
+| `flip` | bool | The zone has flipped polarity |
+| `atr_pct` | float | ATR percentile rank, 0–100 |
+| `zone_score` / `setup_score` / `ctx_score` | float | Score components (35 / 35 / 30 maximum) |
+| `setup` | string | Setup type |
+| `structure` | string | `UP`, `DOWN` or `RANGE` |
+| `regime` | string | For example `TREND↑ +HiVol` |
 
 </details>
 
-<details>
-<summary><strong>Zone Strength</strong></summary>
+### EXIT and HEARTBEAT Payloads
 
-| Input | Default | Description |
-|---|---|---|
-| Use Scalping Scoring | Off | Switches between fast/reactive scoring and accuracy-weighted scoring |
+```json
+{
+  "v": 3,
+  "passphrase": "YOUR_PASSPHRASE",
+  "event": "EXIT",
+  "id": "BTCUSDT.P_15_1790000000000_LONG",
+  "strategy": "ASR_v3",
+  "symbol": "BTCUSDT.P",
+  "side": "LONG",
+  "reason": "TRAIL",
+  "price": 65500.0,
+  "r_gross": 2.193,
+  "r_net": 2.065,
+  "bars": 23,
+  "bar_time": 1790020700000,
+  "ts": 1790021600456
+}
+```
 
-</details>
+```json
+{
+  "v": 3,
+  "passphrase": "YOUR_PASSPHRASE",
+  "event": "HEARTBEAT",
+  "strategy": "ASR_v3",
+  "symbol": "BTCUSDT.P",
+  "tf": "15",
+  "close": 64310.5,
+  "open_trade": false,
+  "bar_time": 1790022600000,
+  "ts": 1790023500321
+}
+```
+
+| `EXIT` field | Description |
+|---|---|
+| `id` | Matches the originating `ENTRY` |
+| `reason` | `SL`, `BE`, `TP2`, `TRAIL` or `TIME` |
+| `price` | Exit price |
+| `r_gross` / `r_net` | Result in R before and after the round-trip cost |
+| `bars` | Bars the trade was open |
+
+### Non-Authenticated Alert Conditions
+
+`ASR v3 Long`, `ASR v3 Short` and `ASR v3 Exit` send a minimal message that deliberately contains **no passphrase**:
+
+```json
+{"v":3,"event":"ENTRY","side":"LONG","symbol":"{{ticker}}","tf":"{{interval}}","price":{{close}},"ts":{{timenow}},"auth":"NONE"}
+```
+
+Use them for human notifications only. Do not connect them to an execution system.
+
+### Security and Receiver Guidance
+
+> [!IMPORTANT]
+> The passphrase travels inside the alert body. Always use an HTTPS endpoint, never publish screenshots of alert messages, and never commit your real passphrase to a repository.
+
+A robust receiver should:
+
+- **Authenticate** — verify `passphrase` with a constant-time comparison and reject anything else. Consider also restricting inbound traffic to TradingView's published webhook IP addresses.
+- **Validate** — check `v`, `event`, required fields and sane price relationships (for a long: `sl < entry < tp1 < tp2`).
+- **Expire** — reject an `ENTRY` when the current time minus `ts` exceeds `signal_ttl_sec`.
+- **Deduplicate** — treat `event_id` as an idempotency key; TradingView can retry deliveries.
+- **Respect ordering** — process `EXIT` before `ENTRY` when both arrive together.
+- **Manage orders itself** — `EXIT` is sent only when the whole virtual trade closes. A receiver should place the stop, TP1 and TP2 as exchange orders from the `ENTRY` payload and mirror the break-even and trailing rules, rather than waiting for partial-fill alerts.
+- **Size positions** — `notional = equity × risk_pct_equity ÷ risk_pct_price`. For example, 10,000 of equity at 0.5% risk and a 0.934% stop gives roughly 5,354 of notional.
+- **Apply independent risk limits** — daily loss limits, maximum open positions and kill switches belong in your system, not in the indicator.
+- **Respond quickly** — acknowledge the webhook within a few seconds and process asynchronously.
+- **Start on paper or demo accounts.**
+
+---
 
 ## Visual Legend
 
